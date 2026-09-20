@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 跑批产物。JSONL 是事实来源没错，但那是**本机**的事实来源：
+# 库可以从它重放，它自己不进版本库（含真实提示词、完整回答、SSE 原始流）。
+results/
+
+# 凭据。infra/ 和 newapi/ 各自还有一份 .gitignore，这里是兜底。
+# 对应的 *.env.example 是空壳模板，要进版本库（不匹配下面的规则，无需额外放行）。
+.env
+*.env
+infra/data/
+newapi/data/
+newapi/logs/
+
+# 只读分析用的解包产物，随时可重新解
+yonwork-asar/

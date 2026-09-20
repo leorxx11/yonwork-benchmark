@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block crumb %}出错了{% endblock %}
+{% block body %}
+<h2>连不上结果库</h2>
+<div class="panel">
+  <pre class="prompt">{{ message }}</pre>
+  <p class="hint" style="margin-top:12px">排查顺序：</p>
+  <pre class="prompt">cd infra && docker compose ps      # 容器在跑吗
+cd infra && docker compose up -d   # 没跑就起
+cat infra/.env                     # 密码和端口对不对</pre>
+</div>
+{% endblock %}

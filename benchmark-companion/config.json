@@ -1,0 +1,13 @@
+{
+  "workbook_path": "C:\\Users\\Administrator\\Desktop\\benchmark\\yonwork_benchmark.xlsx",
+  "prompt_sheet": "Cases",
+  "stats_script_path": "C:\\Users\\Administrator\\Desktop\\benchmark\\newapi_stats.ps1",
+  "token_name": "workbuddy",
+  "stats_settle_seconds": 2.0,
+  "stats_timeout_seconds": 90,
+  "powershell_executable": "powershell.exe",
+  "database_path": "data/benchmark_companion.db",
+  "backup_dir": "data/backups",
+  "log_path": "data/benchmark_companion.log",
+  "always_on_top": true
+}

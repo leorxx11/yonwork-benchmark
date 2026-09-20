@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}YonWork 基准测试{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+</head>
+<body>
+<header class="top">
+  <h1><a href="/" style="text-decoration:none">YonWork 基准测试</a></h1>
+  <div class="crumb">{% block crumb %}{% endblock %}</div>
+</header>
+<main>
+{% block body %}{% endblock %}
+</main>
+</body>
+</html>

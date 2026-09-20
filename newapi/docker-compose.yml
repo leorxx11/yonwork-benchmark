@@ -1,0 +1,31 @@
+# NewAPI —— 基准测试的「后台侧」数据源，和端上 /api/usage/recent-token-history 对账用。
+#
+#   cd newapi && docker compose up -d
+#
+# 单机单实例，SQLite 就够（数据落在 ./data/one-api.db）；
+# 真要上 MySQL 再把下面的 SQL_DSN 和 mysql 服务打开。
+services:
+  new-api:
+    image: calciumion/new-api:latest
+    container_name: new-api
+    restart: unless-stopped
+    # 只绑 127.0.0.1。mirrored 网络模式下 Windows 侧 127.0.0.1:3000 照常可用
+    # （newapi_stats.ps1 里写死的就是这个地址），但局域网里访问不到——
+    # 别重蹈 YonWork 默认 0.0.0.0 那个坑。
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./data:/data
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+      # 不把会话签名密钥写进仓库。Compose 会自动读取同目录的 .env。
+      - SESSION_SECRET=${SESSION_SECRET:?请在 newapi/.env 中设置 SESSION_SECRET}
+      # - SQL_DSN=root:123456@tcp(mysql:3306)/new-api
+      # - REDIS_CONN_STRING=redis://redis
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/status || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

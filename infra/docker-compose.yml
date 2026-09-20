@@ -1,0 +1,33 @@
+# 基准测试结果库。和 newapi/ 那个 compose 分开：
+# 那边是**被测对象**的后台，这边是我们自己的结果库，混在一起会越来越难解释。
+#
+#   cd infra && docker compose up -d
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: bench-mysql
+    restart: unless-stopped
+    # 3307 而不是 3306：别跟本机可能已有的 MySQL 打架；只绑 loopback。
+    ports:
+      - "127.0.0.1:3307:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      # 一律 UTC。WSL 比 Windows 慢 8 秒、NewAPI 还算出过负的 use_time，
+      # 再叠一层时区转换必出事。入库前在 Python 侧转 UTC，库里不做转换。
+      - TZ=UTC
+    command:
+      - --default-time-zone=+00:00
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - ./data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s

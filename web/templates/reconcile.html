@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}对账 · {{ suite.name }}{% endblock %}
+{% block crumb %}<a href="/">全部实验</a> / <a href="/suite/{{ suite.suite_id }}">{{ suite.name }}</a> / 对账{% endblock %}
+{% block body %}
+
+<h2>三来源对账</h2>
+<p class="hint">
+  <strong>会话 JSONL</strong> 是基准：按 <code>idempotencyKey</code> 精确匹配，且覆盖全部模式。
+  <strong>端上</strong>是 <code>/api/usage/recent-token-history</code>，<strong>后台</strong>是 NewAPI
+  （只有走 newapi 模式的轮次才会经过它）。哪一列空着就是那一侧没记。
+</p>
+
+<table>
+  <tr>
+    <th>轮次</th><th>模式</th><th>判定</th>
+    <th class="num">会话 JSONL</th><th class="num">端上</th><th class="num">NewAPI 后台</th>
+    <th>结论</th>
+  </tr>
+  {% for row in rows %}
+  {% set session = row.jsonl_total %}
+  {% set device = row.device_total %}
+  {% set backend = row.newapi_total %}
+  <tr>
+    <td><a href="/run/{{ row.benchmark_id }}">{{ row.case_name }}#{{ row.run_no }}</a></td>
+    <td>
+      {{ row.product }} / {{ row.model_mode }}
+      {% if row.jsonl_model %}<div class="label" style="color:var(--text-muted);font-size:11px">实际 {{ row.jsonl_model }}</div>{% endif %}
+    </td>
+    <td>{{ ui.verdict_tag(row.verdict) }}</td>
+    <td class="num {% if session is none %}missing{% endif %}">{{ session | num }}</td>
+    <td class="num {% if device is none %}missing{% endif %}">{{ device | num }}</td>
+    <td class="num {% if backend is none %}missing{% endif %}">{{ backend | num }}</td>
+    <td>
+      {% if session is none and device is none and backend is none %}
+        <span class="tag"><span class="dot v-Invalid"></span>三处都没有</span>
+      {% else %}
+        {% if device is none %}
+          <span class="tag"><span class="dot v-Fail"></span>端上漏记</span>
+        {% elif session is not none and device != session %}
+          <span class="tag"><span class="dot v-Timeout"></span>端上差 {{ (device - session) | abs | num }}</span>
+        {% endif %}
+        {% if backend is not none and session is not none %}
+          {% if backend == session %}
+            <span class="tag"><span class="dot v-Pass"></span>与后台一致</span>
+          {% else %}
+            <span class="tag"><span class="dot v-Fail"></span>与后台差 {{ (backend - session) | abs | num }}</span>
+          {% endif %}
+        {% elif backend is none and row.model_mode == 'default' %}
+          <span class="tag skipped">— 不走后台</span>
+        {% elif backend is none %}
+          <span class="tag"><span class="dot v-Timeout"></span>后台无记录</span>
+        {% endif %}
+      {% endif %}
+      {% if row.device_match and row.device_match != 'idempotency-key' %}
+        <div class="label" style="color:var(--text-muted);font-size:11px">端上匹配方式 {{ row.device_match }}</div>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
+<p class="hint" style="margin-top:14px">
+  会话 JSONL 和 NewAPI 后台是两个互相独立的来源，它们对得上就说明数字可信；
+  <strong>端上那列大面积空着是实测到的产品问题，不是采集没跑</strong>。
+  补采命令：<code>python -m runner.reconcile --suite &lt;id&gt;</code>（新跑的批次在跑批时就会采）。
+</p>
+
+{% endblock %}

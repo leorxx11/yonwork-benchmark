@@ -1,0 +1,15 @@
+{% if problem %}
+<div class="panel">{{ problem }}</div>
+{% else %}
+<div class="panel sse">
+  {% for item in events %}
+  <div class="ev {% if item.event in ('chat.complete', 'chat.error') %}terminal{% endif %}">
+    <b>{{ item.event }}</b> {{ item.data[:400] }}{% if item.data | length > 400 %}…{% endif %}
+  </div>
+  {% endfor %}
+  <div class="hint" style="margin-top:10px">
+    共 {{ events | length }} 个事件。终止判定只认 <code>chat.complete</code> 或 <code>state:"final"</code>；
+    <code>stream=="compaction"</code> 和 <code>stopReason=="tooluse"</code> 不算终止。
+  </div>
+</div>
+{% endif %}

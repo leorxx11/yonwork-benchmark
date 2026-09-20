@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}{{ run.benchmark_id }}{% endblock %}
+{% block crumb %}
+  <a href="/">全部实验</a> /
+  {% if run.suite_id %}<a href="/suite/{{ run.suite_id }}">{{ run.suite_name }}</a> / {% endif %}
+  {{ run.benchmark_id }}
+{% endblock %}
+{% block body %}
+
+<div class="tiles">
+  {{ ui.tile(ui.verdict_tag(run.verdict), '判定', text=true) }}
+  {{ ui.tile(run.duration_ms | ms, '总耗时') }}
+  {{ ui.tile(run.first_delta_ms | ms, '首字延迟') }}
+  {{ ui.tile(run.product ~ ' / ' ~ run.model_mode, '模式', text=true) }}
+  {{ ui.tile(run.tool_call_count if run.tool_call_count is not none else '—', '工具调用') }}
+</div>
+
+<h2>基本信息</h2>
+<table>
+  <tr><th>BenchmarkId</th><td>{{ run.benchmark_id }}</td></tr>
+  <tr>
+    <th>runId</th>
+    <td>
+      {{ run.run_id or '—' }}
+      {% if run.run_id and run.run_id == run.benchmark_id %}
+        <span class="tag" style="margin-left:8px"><span class="dot v-Pass"></span>与 BenchmarkId 一致</span>
+      {% elif run.run_id %}
+        <span class="tag" style="margin-left:8px"><span class="dot v-Invalid"></span>对不上，产物归属不可信</span>
+      {% endif %}
+    </td>
+  </tr>
+  <tr><th>sessionKey</th><td>{{ run.session_key }}</td></tr>
+  <tr><th>请求模型</th><td>{{ run.requested_model or '未指定（用智能体默认）' }}</td></tr>
+  <tr><th>终止方式</th><td>{{ run.terminated_by or '—' }} / stopReason={{ run.stop_reason or '—' }}</td></tr>
+  <tr><th>起止(UTC)</th><td>{{ run.started_at }} → {{ run.ended_at }}</td></tr>
+  {% if run.note %}<tr><th>备注</th><td>{{ run.note }}</td></tr>{% endif %}
+</table>
+
+<h2>断言五层</h2>
+<table>
+  <tr><th>层</th><th>检查</th><th>结论</th><th>细节</th></tr>
+  {% for check in checks %}
+  <tr>
+    <td>{{ check.layer }}</td>
+    <td>{{ check.name }}</td>
+    <td>{{ ui.verdict_tag(check.verdict) }}</td>
+    <td>{{ check.detail }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h2>token 用量（按来源）</h2>
+{% if usage %}
+<table>
+  <tr>
+    <th>来源</th><th>模型</th><th class="num">input</th><th class="num">output</th>
+    <th class="num">total</th><th class="num">cacheRead</th><th>匹配方式</th>
+  </tr>
+  {% for row in usage %}
+  <tr>
+    <td>{{ row.source }}</td>
+    <td>{{ row.model or '—' }}</td>
+    <td class="num">{{ row.input_tokens | num }}</td>
+    <td class="num">{{ row.output_tokens | num }}</td>
+    <td class="num">{{ row.total_tokens | num }}</td>
+    <td class="num">{{ row.cache_read_tokens | num }}</td>
+    <td>{{ row.matched_by }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="panel">三个来源一条都没采到。端上端点漏记时就是这样，判定不受影响，但成本层全部跳过。</div>
+{% endif %}
+
+<h2>Prompt</h2>
+<div class="panel"><pre class="prompt">{{ run.prompt }}</pre></div>
+
+<h2>答案</h2>
+<div class="panel"><pre class="answer">{{ run.answer_preview or '（没有答案文本）' }}</pre></div>
+
+<h2>SSE 原始流</h2>
+<button class="ghost" hx-get="/run/{{ run.benchmark_id }}/transcript"
+        hx-target="#transcript" hx-swap="innerHTML" hx-disabled-elt="this">
+  展开（用来复盘终止判定）
+</button>
+<div id="transcript" style="margin-top:12px"></div>
+
+{% endblock %}

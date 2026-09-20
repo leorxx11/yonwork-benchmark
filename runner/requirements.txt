@@ -1,0 +1,5 @@
+openpyxl==3.1.5
+pymysql==2.2.8
+fastapi==0.141.1
+jinja2
+uvicorn[standard]

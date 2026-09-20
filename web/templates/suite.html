@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}{{ suite.name }}{% endblock %}
+{% block crumb %}<a href="/">全部实验</a> / {{ suite.name }}{% endblock %}
+{% block body %}
+
+{% set total = modes | map(attribute='total') | map('int') | sum %}
+{% set passed = modes | map(attribute='pass_count') | map('int') | sum %}
+{% set usage_rows = modes | map(attribute='usage_rows') | map('int') | sum %}
+{% set batch_count = modes | map(attribute='batch_count') | map('int') | sum %}
+
+<div class="tiles">
+  {{ ui.tile(total, '总轮次') }}
+  {{ ui.tile((100 * passed / total) | round(1) ~ '%' if total else '—', '通过率') }}
+  {{ ui.tile(modes | length, '模式数') }}
+  {{ ui.tile(batch_count, '批次数') }}
+  {{ ui.tile(usage_rows ~ ' / ' ~ total, '端上采到用量的轮次') }}
+</div>
+
+<h2>各模式判定分布</h2>
+<p class="hint">颜色只是辅助，实际读数看右侧计数和下方表格。</p>
+{{ ui.verdict_legend(modes, verdict_order) }}
+
+<table style="margin-top:12px">
+  <tr>
+    <th>产品 / 模型</th><th style="width:34%">判定分布</th>
+    <th class="num">轮次</th><th class="num">平均耗时</th><th class="num">最慢</th>
+    <th class="num">总 token<br><span style="font-weight:400;font-size:11px">端上优先，缺则后台</span></th><th class="num">批次</th>
+  </tr>
+  {% for row in modes %}
+  <tr>
+    <td>
+      <strong>{{ row.product }}</strong> / {{ row.model_mode }}
+      {% if row.model_ref %}<div class="label" style="color:var(--text-muted);font-size:11px">{{ row.model_ref }}</div>{% endif %}
+    </td>
+    <td>{{ ui.verdict_bar(row, verdict_order) }}</td>
+    <td class="num">{{ row.total | int }}</td>
+    <td class="num">{{ row.avg_ms | ms }}</td>
+    <td class="num">{{ row.max_ms | ms }}</td>
+    <td class="num {% if not row.total_tokens %}missing{% endif %}">{{ row.total_tokens | num }}</td>
+    <td class="num">{{ row.batch_count | int }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<p class="hint" style="margin-top:14px">
+  「端上采到用量的轮次」是 {{ usage_rows }}/{{ total }}：端上
+  <code>/api/usage/recent-token-history</code> 在漏记，这是已知的产品问题，不是跑批失败。
+  所以「总 token」那列回落到了 NewAPI 后台数字（只有走 newapi 模式的轮次才有）。
+  逐轮差异看 <a href="/reconcile/{{ suite.suite_id }}">对账页</a>。
+</p>
+
+{% endblock %}

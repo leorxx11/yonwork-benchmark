@@ -1,0 +1,44 @@
+{# 判定标记一律「色块 + 文字」。status 色在 light 模式下有两档低于 3:1，
+   颜色不能单独承载含义，所以这里没有任何只给色块不给文字的宏。 #}
+
+{% macro verdict_tag(verdict) -%}
+  {%- if verdict -%}
+    <span class="tag"><span class="dot v-{{ verdict }}"></span>{{ verdict }}</span>
+  {%- else -%}
+    <span class="tag skipped">— 未执行</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro verdict_bar(row, verdict_order) %}
+  {% set total = row.total or 0 %}
+  <div class="bar">
+    {% if total %}
+      {% for name in verdict_order %}
+        {% set count = (row[name.lower() ~ '_count'] or 0) | int %}
+        {% if count %}
+          <div class="seg v-{{ name }}" style="flex: {{ count }}" title="{{ name }} {{ count }}">
+            {{ count if (count / total) > 0.12 else '' }}
+          </div>
+        {% endif %}
+      {% endfor %}
+    {% else %}
+      <div class="seg empty"></div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% macro verdict_legend(rows, verdict_order) %}
+  <div class="legend">
+    {% for name in verdict_order %}
+      {% set count = rows | map(attribute=name.lower() ~ '_count') | map('int') | sum %}
+      <span><i class="swatch v-{{ name }}"></i>{{ name }} {{ count }}</span>
+    {% endfor %}
+  </div>
+{% endmacro %}
+
+{% macro tile(value, label, text=false) %}
+  <div class="tile">
+    <div class="value{% if text %} text{% endif %}">{{ value }}</div>
+    <div class="label">{{ label }}</div>
+  </div>
+{% endmacro %}

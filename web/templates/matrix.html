@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}矩阵 · {{ suite.name }}{% endblock %}
+{% block crumb %}<a href="/">全部实验</a> / <a href="/suite/{{ suite.suite_id }}">{{ suite.name }}</a> / 矩阵{% endblock %}
+{% block body %}
+
+<h2>Case × 模式</h2>
+<p class="hint">同一个 prompt 在四个模式下分别是什么结果。点格子看这一轮的细节。</p>
+
+<table class="matrix">
+  <tr>
+    <th>Case</th>
+    {% for mode in modes %}<th>{{ mode }}</th>{% endfor %}
+  </tr>
+  {% for row in table %}
+  <tr>
+    <td><strong>{{ row.case }}</strong></td>
+    {% for cell in row.cells %}
+    <td class="cell">
+      {% for run in cell %}
+      <a class="cellbox" href="/run/{{ run.benchmark_id }}">
+        <div class="verdict">{{ ui.verdict_tag(run.verdict) }}</div>
+        <div class="meta">
+          {{ run.duration_ms | ms }}
+          {% if run.total_tokens %}· {{ run.total_tokens | num }} tok{% if run.tokens_source_label %}（{{ run.tokens_source_label }}）{% endif %}{% else %}· 无用量{% endif %}
+        </div>
+      </a>
+      {% else %}
+      <span class="cellbox blank">没跑</span>
+      {% endfor %}
+    </td>
+    {% endfor %}
+  </tr>
+  {% endfor %}
+</table>
+
+{% endblock %}
