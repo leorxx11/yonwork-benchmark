@@ -182,6 +182,33 @@ def new_job(request: Request) -> HTMLResponse:
     return _render(request, "new_job.html", **_job_form_context())
 
 
+def _text_field(raw: str, label: str) -> str:
+    """拦住双重编码的表单值。
+
+    `application/x-www-form-urlencoded` 规范只允许 ASCII / percent-encoded，
+    所以 Starlette 对裸字节按 **Latin-1** 解。浏览器一定会 percent-encode，
+    但 `curl -d '名字=中文'` 发的是裸 UTF-8 字节，于是
+    `会`（E4 BC 9A）被当成三个 Latin-1 字符，入库再编一次成 C3A4 C2BC C29A——
+    3 字节变 6 字节，页面上就是「ä¼è¯…」。
+
+    **这正是本项目最怕的那类问题：不报错、任务照跑、只有显示是坏的。**
+    所以宁可当场拒绝也不猜着修——猜错了就是把用户真正想要的名字改掉。
+    2026-09-21 实测清掉过 5 个这样的值，全是用 curl 建的测试任务。
+    """
+    text = raw.strip()
+    try:
+        decoded = text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text  # 正常情况都走这里：非 Latin-1 字符编不过去
+    if decoded == text:
+        return text
+    raise ValueError(
+        f"{label}疑似双重编码（{text!r} 看起来应该是 {decoded!r}）。"
+        "表单值没有做 percent 编码——浏览器会自动做，用 curl 的话改成 "
+        "`--data-urlencode`，不要用 `-d`。"
+    )
+
+
 def _number_field(raw: Any, label: str, *, default: float) -> float:
     """表单数字按字符串收，自己解析。
 
@@ -218,7 +245,9 @@ def submit_job(
         resolve_case_set(selected)
         job = create_job(
             NewJob(
-                experiment_name=experiment_name,
+                # 实验名是报告的主键来源（suite_id 就是它的哈希），
+                # 编码一旦错了，同一个实验会裂成两份报告。
+                experiment_name=_text_field(experiment_name, "实验名称"),
                 case_set_id=case_set_id,
                 case_catalog_path=str(CASE_CATALOG_PATH),
                 product=product,

@@ -173,6 +173,60 @@ class WebApiTests(unittest.TestCase):
         for product in ("yonwork", "workbuddy"):
             self.assertIn(f'value="{product}"', body)
 
+    @patch(
+        "web.api._runtime_context",
+        return_value={
+            "ok": True, "logged_in": True, "endpoint": "", "version": "",
+            "models": [], "problem": "",
+        },
+    )
+    def test_double_encoded_name_is_rejected_not_silently_stored(self, _runtime) -> None:
+        """裸 UTF-8 字节提交的表单会被按 Latin-1 解，静默写出乱码实验名。
+
+        实测过：`curl -d '实验名=会话分裂验证'` 入库变成 'ä¼\x9aè¯\x9d…'，
+        任务照跑、不报错，只有页面显示是坏的。实验名还是 suite_id 的来源，
+        编码错了同一个实验会裂成两份报告。
+        """
+        response = api.submit_job(
+            self._request("/jobs"),
+            experiment_name="会话分裂验证".encode("utf-8").decode("latin-1"),
+            case_set_id="smoke",
+            product="yonwork",
+            model_query="",
+            timeout_seconds="60",
+            limit_runs="0",
+            collect_usage=True,
+            export_xlsx=True,
+        )
+        self.assertEqual(400, response.status_code)
+        body = response.body.decode()
+        self.assertIn("双重编码", body)
+        self.assertIn("会话分裂验证", body)  # 把猜到的正确值告诉用户
+
+    @patch("web.api.create_job", return_value={"job_id": "abc123"})
+    @patch(
+        "web.api._runtime_context",
+        return_value={
+            "ok": True, "logged_in": True, "endpoint": "", "version": "",
+            "models": [], "problem": "",
+        },
+    )
+    def test_normal_chinese_name_passes_through(self, _runtime, create) -> None:
+        """别把正常中文名也拦了——浏览器提交的就是这种。"""
+        response = api.submit_job(
+            self._request("/jobs"),
+            experiment_name="会话分裂验证",
+            case_set_id="smoke",
+            product="yonwork",
+            model_query="",
+            timeout_seconds="60",
+            limit_runs="0",
+            collect_usage=True,
+            export_xlsx=True,
+        )
+        self.assertEqual(303, response.status_code)
+        self.assertEqual("会话分裂验证", create.call_args.args[0].experiment_name)
+
     @patch("web.api.list_events", return_value=[])
     @patch("web.api.get_job")
     def test_terminal_job_stops_browser_polling(self, get, _events) -> None:

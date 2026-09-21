@@ -45,6 +45,29 @@ FastAPI + Jinja + 少量本地原生 JavaScript，没有 CDN、Node 或前端构
 以前同一个东西在导航叫「报告」、标题叫「对比实验」、面包屑叫「全部实验」，
 光是对上号就要费一遍劲。改名字时三处一起改。
 
+## 用 curl 打这个表单时必须 `--data-urlencode`
+
+`application/x-www-form-urlencoded` 规范只允许 ASCII / percent-encoded，Starlette 对裸字节
+按 **Latin-1** 解。浏览器一定会 percent-encode，但 `curl -d '实验名称=会话分裂验证'` 发的是
+裸 UTF-8 字节，于是 `会`（`E4 BC 9A`）被当成三个 Latin-1 字符、入库再编一次成
+`C3A4 C2BC C29A`——3 字节变 6 字节，页面上显示成 `ä¼è¯…`。
+
+**任务照跑、不报错、退出码正常，只有显示是坏的**，属于本项目最难查的那一类。
+而且实验名是 `suite_id` 的来源（`sha256(name)[:32]`），编码错了同一个实验会裂成两份报告。
+
+所以 `/jobs` 现在会当场拒绝疑似双重编码的实验名，并在报错里给出它猜到的正确值。
+**拒绝而不是自动修**：猜错了就是把用户真正想要的名字改掉。
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs --data-urlencode '实验名称=…'   # 对
+curl -X POST http://127.0.0.1:8000/jobs -d '实验名称=…'                  # 会被拒
+```
+
+万一已经写进去了：`name.encode('latin-1').decode('utf-8')` 能原样还原
+（正常字符串会编码失败，所以这个判据本身就是检测手段）。
+修 `suite_runs.name` 时记得一并重算 `suite_id` 并更新 `batches.suite_id`
+和 `benchmark_jobs.suite_id`，否则将来同名任务会算出另一个 id，凭空多一份同名报告。
+
 ## 已知限制
 
 - 一个任务只跑一个「产品 × 模型」。用相同实验名称提交多个任务即可在同一份报告里横向对比；
