@@ -8,8 +8,9 @@
   <div>
     <h2>测试任务</h2>
     <p class="hint">
-      一条任务 = 一次跑批。由独立 Worker <strong>串行</strong>执行，
+      一条任务 = 一个模式跑一批。由独立 Worker <strong>串行</strong>执行，
       所以同时提交多条只会排队，不会并发——刷新或关掉页面都不影响。
+      一次提交多个模式时，它们在这里是多条任务，另有一个计划页看整组进度。
     </p>
   </div>
   <a class="button primary" href="/jobs/new">新建测试</a>
@@ -33,6 +34,7 @@
       {# 跑完之后最该点的是报告，原来这一列只有「详情」，
          要先进任务页才能再点一次才到报告。 #}
       <a href="/jobs/{{ job.job_id }}">执行日志</a>
+      {% if job.plan_id %} · <a href="/plans/{{ job.plan_id }}">整组</a>{% endif %}
       {% if job.suite_id %} · <a href="/suite/{{ job.suite_id }}"><strong>测试报告</strong></a>{% endif %}
     </td>
   </tr>

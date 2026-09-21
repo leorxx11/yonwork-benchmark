@@ -26,9 +26,12 @@
 {# 后台跑批不依赖页面开着，所以必须有个离开任务页也看得见的提示——
    否则用户不知道还在跑，会重复提交，而 Worker 是串行的，只会排队。 #}
 {% if active_job %}
-<a class="running-bar" href="/jobs/{{ active_job.job_id }}">
+{# 属于跨模式计划时直接指向计划页：这条只显示「当前这个模式」的进度，
+   点进单个任务页会让人以为整组就这么点轮次。 #}
+<a class="running-bar" href="{% if active_job.plan_id %}/plans/{{ active_job.plan_id }}{% else %}/jobs/{{ active_job.job_id }}{% endif %}">
   <span class="job-state s-{{ active_job.status }}">{{ active_job.status }}</span>
   <strong>{{ active_job.experiment_name }}</strong>
+  {% if active_job.plan_label %}<span>{{ active_job.plan_label }}</span>{% endif %}
   <span>{{ active_job.completed_runs }}/{{ active_job.total_runs or '—' }} 轮</span>
   <span class="grow"></span>
   <span>查看进度 →</span>

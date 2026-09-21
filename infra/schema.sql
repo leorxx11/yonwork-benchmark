@@ -112,8 +112,15 @@ CREATE TABLE IF NOT EXISTS usage_samples (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Web 控制台提交的执行任务。任务状态属于控制面，不是模型判定结果。
+-- ⚠️ 与 runner/job_store.py 的 JOBS_SCHEMA 是有意重复的两份：这个文件只在
+-- 数据目录为空时由 MySQL 镜像执行一次，改一处必须同步改另一处。
+-- plan_* 三列的按需迁移在 job_store._ensure_plan_columns，旧库靠那里补。
 CREATE TABLE IF NOT EXISTS benchmark_jobs (
     job_id             CHAR(32)     NOT NULL PRIMARY KEY,
+    -- 一次「跨模式一键提交」的分组。NULL = 单模式任务。
+    plan_id            CHAR(32)     NULL,
+    plan_position      INT          NOT NULL DEFAULT 0,
+    plan_label         VARCHAR(128) NOT NULL DEFAULT '',
     batch_id           VARCHAR(64)  NOT NULL,
     experiment_name    VARCHAR(128) NOT NULL,
     case_catalog_path  VARCHAR(512) NOT NULL DEFAULT 'cases/catalog.yaml',
@@ -139,7 +146,8 @@ CREATE TABLE IF NOT EXISTS benchmark_jobs (
     finished_at        DATETIME(3) NULL,
     updated_at         DATETIME(3) NOT NULL,
     UNIQUE KEY uk_job_batch (batch_id),
-    KEY idx_job_status_created (status, created_at)
+    KEY idx_job_status_created (status, created_at),
+    KEY idx_job_plan (plan_id, plan_position)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS benchmark_job_events (

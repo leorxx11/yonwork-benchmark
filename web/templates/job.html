@@ -9,6 +9,10 @@
   批次 <code>{{ job.batch_id }}</code> ·
   用例集 <code>{{ job.case_set_id }}</code> ·
   产品 <code>{{ job.product }}</code>
+  {% if job.plan_id %}
+  · 跨模式计划里的第 {{ job.plan_position + 1 }} 个模式，
+  <a href="/plans/{{ job.plan_id }}">看整组进度 →</a>
+  {% endif %}
 </p>
 
 {# 状态整块每 2 秒换一次。轮询失败的提示由 app.js 插在这个容器**外面**，

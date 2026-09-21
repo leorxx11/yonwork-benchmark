@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% set nav = 'jobs' %}
+{% block title %}测试计划 {{ plan.plan_id[:8] }}{% endblock %}
+{% block crumb %}<a href="/jobs">测试任务</a> / {{ plan.experiment_name }}（跨模式）{% endblock %}
+{% block body %}
+
+<h2>{{ plan.experiment_name }}</h2>
+<p class="hint">
+  一次提交的 {{ plan.jobs | length }} 个模式 ·
+  用例集 <code>{{ plan.case_set_id }}</code> ·
+  计划 <code>{{ plan.plan_id[:8] }}</code>
+</p>
+<p class="hint">
+  Worker <strong>串行</strong>执行，按下表顺序一个模式跑完再跑下一个。
+  每个模式是独立任务：一个挂了不影响其余，报告里就只缺那一列。
+</p>
+
+{# 和任务页同一套轮询：整块每 2 秒换一次，提示由 app.js 插在容器外面。 #}
+<div id="plan-status"
+     data-poll-url="/plans/{{ plan.plan_id }}/status"
+     data-poll-interval="2000">
+  正在加载计划状态…
+</div>
+
+{% endblock %}

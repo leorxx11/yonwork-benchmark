@@ -1,0 +1,49 @@
+<div class="tiles">
+  <div class="tile"><div class="value">{{ plan.done_modes }}/{{ plan.jobs | length }}</div><div class="label">已结束的模式</div></div>
+  <div class="tile"><div class="value">{{ plan.completed_runs }}/{{ plan.total_runs or '—' }}</div><div class="label">累计轮次</div></div>
+  <div class="tile"><div class="value text">{{ '已全部结束' if plan.finished else '执行中' }}</div><div class="label">计划状态</div></div>
+</div>
+
+{% if plan.total_runs %}
+<div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="{{ plan.total_runs }}" aria-valuenow="{{ plan.completed_runs }}">
+  <span style="width:{{ (100 * plan.completed_runs / plan.total_runs) | round(1) }}%"></span>
+</div>
+{% endif %}
+
+<div class="actions">
+  {% if plan.suite_id %}
+    <a class="button primary" href="/suite/{{ plan.suite_id }}">查看测试报告</a>
+    <a class="button" href="/matrix/{{ plan.suite_id }}">Case × 模式对比表</a>
+  {% elif plan.finished %}
+    <span class="hint" style="margin:0">没有任何模式产出可入库的结果，所以还没有报告。</span>
+  {% else %}
+    <span class="hint" style="margin:0">第一个模式入库后，这里会出现报告链接。</span>
+  {% endif %}
+  {% if not plan.finished %}
+  <form method="post" action="/plans/{{ plan.plan_id }}/cancel">
+    <button class="danger" type="submit">停止剩余模式</button>
+  </form>
+  <span class="hint" style="margin:0">已跑完的轮次照常入库；正在跑的那一轮会跑完再停。</span>
+  {% endif %}
+</div>
+
+<h2>各个模式</h2>
+<table>
+  <tr>
+    <th class="num">#</th><th>模式</th><th>批次</th><th>状态</th>
+    <th class="num">进度</th><th>说明</th><th>去哪看</th>
+  </tr>
+  {% for job in plan.jobs %}
+  <tr>
+    <td class="num">{{ loop.index }}</td>
+    <td>{{ job.plan_label or (job.product ~ ' / ' ~ (job.model_query or '默认')) }}</td>
+    <td><code>{{ job.batch_id }}</code></td>
+    <td><span class="job-state s-{{ job.status }}">{{ job.status }}</span></td>
+    <td class="num">{{ job.completed_runs }}/{{ job.total_runs or '—' }}</td>
+    {# 一个模式失败时，错误就写在它自己这一行——不要汇总到计划层，
+       那会让「一个模式挂了」看起来像「整组都挂了」。 #}
+    <td>{{ job.error or '—' }}</td>
+    <td><a href="/jobs/{{ job.job_id }}">执行日志</a></td>
+  </tr>
+  {% endfor %}
+</table>

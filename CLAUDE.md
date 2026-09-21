@@ -562,7 +562,7 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
    默认模型和 WorkBuddy 不在这一路的覆盖范围。入库按来源保留计数，事后对账不覆盖
    已用于判定的逐轮证据。细节与验证见 `docs/error-calls-collection.md`。
 
-3.2 ~~抽 `Driver` 接口~~ **已完成 2026-09-21。** 跨模式一键编排仍未做，见下。
+3.2 ~~抽 `Driver` 接口~~ **已完成 2026-09-21。** 跨模式一键编排也已完成，见 3.3。
    接口在 `runner/drivers/`，`batch.py` 现在对被测产品一无所知——
    隔离、逐轮落盘、判定、计数这四件事共用，产品相关的全在驱动后面。
    YonWork 主链路**已实测**（Web 提交 → Worker → 驱动 → 入库 → 报告，跑通一轮 Pass）。
@@ -602,14 +602,58 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
      要从 Web 控制台跑 WorkBuddy，Worker 得在宿主机原生起（`python -m runner.worker`）。
      控制台的产品选项上已经写了这个条件。
 
-   **仍未做：跨模式一键编排**——现在还是「同一个实验名提交多次，每次换产品/模型」。
+3.3 **跨模式一键编排。已完成 2026-09-21。**
+   `/jobs/new` 现在收的是**一到多行模式**（产品 × 模型），一次提交建出 N 条任务，
+   共用一个 `plan_id` 和**同一个实验名**。
+
+   **支点是实验名，不是新写一个编排器**：`suite_id` 就是实验名的哈希，所以这组批次
+   天然落进同一份报告，`/matrix/<suite_id>` 那张 Case × 模式表直接就是对比结果。
+   **Worker、`batch.py`、驱动层一行没改**——Worker 本来就串行领任务，
+   一个模式 = 一条任务 = 一个批次，正好是它已有的粒度。
+
+   - 数据层：`benchmark_jobs` 加 `plan_id` / `plan_position` / `plan_label`
+     （`job_store._ensure_plan_columns` 按需 ALTER，旧库自动补；`infra/schema.sql` 同步改）。
+   - `create_plan()` 的 N 条 INSERT 在**同一个事务**里。半个计划比没有计划更糟：
+     报告里缺的那一列和「那个模式全挂了」长得一模一样。
+   - `/plans/<plan_id>` 看整组进度、一次停掉全部剩余模式。
+     聚合的**只有进度不是判定**——哪个模式好由报告按断言说话。
+   - 失败隔离抬到计划层：一个模式挂了只缺那一列，其余照跑。
+
+   ⚠️ **`claim_next_job` / `active_job` 的排序里 `plan_position` 不能省。**
+   同一计划的 N 条任务共用一个 `created_at`（刻意的，它们是一次提交），
+   光按时间排全是并列，MySQL 挑哪条随缘 —— 表现为模式乱序执行。
+
+   ⚠️ **同一个（产品 × 模型）组合选两次会被提交时拒绝。**
+   `mode_summary` 按 product+model 分组合并批次，重复提交会让那一列轮次凭空翻倍
+   且不报错，又是一个静默脏数据。
+
+   ⚠️ **模式的 label 一律服务端从 product + model_query 推，不收客户端传的显示名。**
+   落库的标签只能反映真正发出去的值；报告里的模型名来自实际响应（`model_mode`），
+   两者对不上正是六-4 那个静默回落默认模型的信号，不能被一个好看的标签盖住。
+
+   **实测（2026-09-21，重建镜像后走 Web）**：
+   - 两模式计划（`yonwork/newapi` + `yonwork/默认`）一次提交跑完，两轮都 Pass，
+     落进同一个 `suite_id`，`/matrix` 出两列 `yonwork / newapi`、`yonwork / default`。
+   - 三模式计划排队时整组取消 → 三条全 Cancelled，顺序与提交一致。
+   - 重复模式提交 → HTTP 400，库里一条都没留（事务回滚验证过）。
+
+   **仍是单模式的：CLI（`python -m runner`）**。一次跑一个批次，没打算跟着改——
+   编排属于控制台，CLI 的定位是单批次和 `--dry-run` 前置检查。
+
+⚠️ **`web/tests` 以前不是真离线的**（2026-09-21 发现并修）：`_render` 一律调
+`_active_job()` → `job_store.ensure_schema()`，本机 MySQL 恰好起着时它会**真的连库执行 DDL**。
+跑一次 web 单测就把 `plan_*` 三列 ALTER 进了实验库才发现。库没起时被
+`DatabaseError` 兜住返回 None，所以一直没人察觉，而且测试行为会随「容器开没开」变化。
+已在 `WebApiTests.setUp` 里把 `_active_job` 打桩。**新增碰 `_render` 的测试别把这个桩去掉。**
 
 ### 明确往后放的（写下来是为了不再反复捡起）
 
 - **device-api / newapi 改按 runId 匹配（原 §7-5）**：worker 已被 MySQL 咨询锁
   **强制串行**，串行下时间窗匹配是对的，不构成当前风险。真要并发再做。
 - **`infra/schema.sql` 与 `job_store.py` 的双份表定义**：已验证逐字段一致。
-  重复是必要的（schema.sql 只在数据目录为空时执行一次），加个交叉引用注释即可。
+  重复是必要的（schema.sql 只在数据目录为空时执行一次），交叉引用注释已加在
+  `schema.sql` 的 `benchmark_jobs` 上方。**加列时两处都要改，再补一段按需 ALTER**，
+  否则旧库不会自动获得新列（3.3 的 `plan_*` 就是这么处理的）。
 - **清理那 9 条分裂会话**：留着当第六节-5 的上报证据，比清掉有用。
 
 ### 随时可做、不占开发时间

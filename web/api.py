@@ -23,11 +23,16 @@ from runner.discovery import DiscoveryError, discover, has_session, health_check
 from runner.drivers import DRIVERS
 from runner.job_store import (
     NewJob,
+    NewPlan,
+    PlanMode,
     active_job,
+    cancel_plan,
     create_job,
+    create_plan,
     get_job,
     list_events,
     list_jobs,
+    plan_jobs,
     request_cancel,
 )
 from runner.transport import TransportError
@@ -225,6 +230,44 @@ def _number_field(raw: Any, label: str, *, default: float) -> float:
         raise ValueError(f"{label}必须是数字：{raw!r}") from None
 
 
+def _form_list(value: Any) -> list[str]:
+    """重复表单字段收成列表。
+
+    只认真正的序列：这些参数的默认值是 FastAPI 的 `Form(...)` 描述符，
+    走 HTTP 时会被替换成列表，被当普通函数直接调用（单测、脚本）时不会——
+    那时拿到的是描述符对象本身，`or []` 判不出来，会当成「有一行模式」。
+    """
+    return [str(item) for item in value] if isinstance(value, (list, tuple)) else []
+
+
+def _modes(products: list[str] | None, models: list[str] | None) -> list[PlanMode]:
+    """把表单里那组模式行收成 PlanMode 列表。
+
+    两个重复字段按**下标**配对，不用 `产品|模型` 那种拼接值——拼接就要定分隔符，
+    而模型 choiceId 里出现什么字符我们说了不算，分隔符一撞就会静默配错组合。
+
+    **label 一律由服务端从 product + model_query 推**，不收客户端传来的显示名。
+    落库的标签只能反映真正发出去的那个值；报告页显示的模型名来自实际响应
+    （`model_mode`），两者对不上时说明产品静默回落了默认模型（CLAUDE.md 六-4），
+    那正是要看见的信号，不能被一个客户端自述的好看标签盖住。
+    """
+    rows = _form_list(products)
+    picked = _form_list(models)
+    if len(picked) != len(rows):
+        raise ValueError(
+            f"模式行的产品数（{len(rows)}）和模型数（{len(picked)}）对不上，请重新提交表单"
+        )
+    modes: list[PlanMode] = []
+    for index, name in enumerate(rows):
+        name = name.strip()
+        if not name:
+            continue
+        if name not in DRIVERS:
+            raise ValueError(f"没有名为 {name!r} 的产品驱动")
+        modes.append(PlanMode(product=name, model_query=picked[index].strip()))
+    return modes
+
+
 @app.post("/jobs")
 def submit_job(
     request: Request,
@@ -232,28 +275,54 @@ def submit_job(
     case_set_id: str = Form(...),
     product: str = Form("yonwork"),
     model_query: str = Form(""),
+    mode_product: list[str] | None = Form(None),
+    mode_model: list[str] | None = Form(None),
     timeout_seconds: str = Form("600"),
     limit_runs: str = Form("0"),
     collect_usage: bool = Form(False),
     export_xlsx: bool = Form(False),
 ) -> HTMLResponse:
     try:
-        if product not in DRIVERS:
-            raise ValueError(f"没有名为 {product!r} 的产品驱动")
+        # 没有模式行就回落成单产品单模型那一套，旧表单和 curl 脚本照常能用。
+        modes = _modes(mode_product, mode_model)
+        if not modes:
+            if product not in DRIVERS:
+                raise ValueError(f"没有名为 {product!r} 的产品驱动")
+            modes = [PlanMode(product=product, model_query=model_query)]
+
         selected = load_catalog(CASE_CATALOG_PATH).get(case_set_id)
         # Web 和 Worker 使用同一套环境；这里提前拦住未配置的路径占位符。
         resolve_case_set(selected)
-        job = create_job(
-            NewJob(
-                # 实验名是报告的主键来源（suite_id 就是它的哈希），
-                # 编码一旦错了，同一个实验会裂成两份报告。
-                experiment_name=_text_field(experiment_name, "实验名称"),
+        # 实验名是报告的主键来源（suite_id 就是它的哈希），
+        # 编码一旦错了，同一个实验会裂成两份报告。
+        name = _text_field(experiment_name, "实验名称")
+        timeout = _number_field(timeout_seconds, "单轮超时", default=600)
+        limit = int(_number_field(limit_runs, "最多运行轮次", default=0))
+
+        if len(modes) == 1:
+            job = create_job(
+                NewJob(
+                    experiment_name=name,
+                    case_set_id=case_set_id,
+                    case_catalog_path=str(CASE_CATALOG_PATH),
+                    product=modes[0].product,
+                    model_query=modes[0].model_query,
+                    timeout_seconds=timeout,
+                    limit_runs=limit,
+                    collect_usage=collect_usage,
+                    export_xlsx=export_xlsx,
+                )
+            )
+            return RedirectResponse(f"/jobs/{job['job_id']}", status_code=303)
+
+        plan = create_plan(
+            NewPlan(
+                experiment_name=name,
                 case_set_id=case_set_id,
+                modes=tuple(modes),
                 case_catalog_path=str(CASE_CATALOG_PATH),
-                product=product,
-                model_query=model_query,
-                timeout_seconds=_number_field(timeout_seconds, "单轮超时", default=600),
-                limit_runs=int(_number_field(limit_runs, "最多运行轮次", default=0)),
+                timeout_seconds=timeout,
+                limit_runs=limit,
                 collect_usage=collect_usage,
                 export_xlsx=export_xlsx,
             )
@@ -265,7 +334,7 @@ def submit_job(
             **_job_form_context(str(exc)),
             status_code=400,
         )
-    return RedirectResponse(f"/jobs/{job['job_id']}", status_code=303)
+    return RedirectResponse(f"/plans/{plan['plan_id']}", status_code=303)
 
 
 @app.get("/jobs/{job_id}", response_class=HTMLResponse)
@@ -298,6 +367,55 @@ def cancel_job(job_id: str) -> RedirectResponse:
         raise HTTPException(status_code=404, detail="没有这个任务")
     request_cancel(job_id)
     return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+TERMINAL_JOB_STATUSES = frozenset({"Completed", "Failed", "Cancelled"})
+
+
+def _plan_view(plan_id: str) -> dict[str, Any]:
+    """一个计划的聚合视图。
+
+    **聚合的只有进度，不是判定。** 哪个模式跑得好由报告页按断言结果说话；
+    这里把 N 个模式的成败混成一个总状态就等于在控制面上做判定了。
+    所以 `finished` 只回答「还要不要继续轮询」。
+    """
+    jobs = plan_jobs(plan_id)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="没有这个测试计划")
+    return {
+        "plan_id": plan_id,
+        "experiment_name": str(jobs[0]["experiment_name"]),
+        "case_set_id": str(jobs[0]["case_set_id"]),
+        "jobs": jobs,
+        # 同一个实验名 → 同一个 suite_id，所以任意一个跑完入库的模式
+        # 都指向那份合并后的对比报告。
+        "suite_id": next((job["suite_id"] for job in jobs if job.get("suite_id")), None),
+        "total_runs": sum(int(job.get("total_runs") or 0) for job in jobs),
+        "completed_runs": sum(int(job.get("completed_runs") or 0) for job in jobs),
+        "done_modes": sum(1 for job in jobs if job["status"] in TERMINAL_JOB_STATUSES),
+        "finished": all(job["status"] in TERMINAL_JOB_STATUSES for job in jobs),
+    }
+
+
+@app.get("/plans/{plan_id}", response_class=HTMLResponse)
+def plan_detail(request: Request, plan_id: str) -> HTMLResponse:
+    return _render(request, "plan.html", plan=_plan_view(plan_id))
+
+
+@app.get("/plans/{plan_id}/status", response_class=HTMLResponse)
+def plan_status(request: Request, plan_id: str) -> HTMLResponse:
+    plan = _plan_view(plan_id)
+    response = _render(request, "_plan_status.html", plan=plan)
+    if plan["finished"]:
+        response.headers["X-Benchmark-Poll"] = "stop"
+    return response
+
+
+@app.post("/plans/{plan_id}/cancel")
+def cancel_plan_route(plan_id: str) -> RedirectResponse:
+    _plan_view(plan_id)  # 不存在就 404，不要静默成功
+    cancel_plan(plan_id)
+    return RedirectResponse(f"/plans/{plan_id}", status_code=303)
 
 
 @app.get("/suite/{suite_id}", response_class=HTMLResponse)

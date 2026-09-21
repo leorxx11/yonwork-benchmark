@@ -26,7 +26,52 @@ function pollNotice(target) {
   return notice;
 }
 
+// 新建测试页的模式行。JS 只增删行，取值仍由表单自己完成：
+// 两个重复字段（mode_product / mode_model）按下标配对，服务端 zip 起来。
+// 所以即使这段脚本没跑起来，第一行照样能正常提交一个模式。
+function setupModeRows() {
+  const container = document.getElementById("mode-rows");
+  const addButton = document.getElementById("mode-add");
+  if (!container || !addButton) return;
+
+  const refresh = () => {
+    const rows = container.querySelectorAll(".mode-row");
+    // 只剩一行时不给删——删空了提交上去是「一个模式都没有」，
+    // 与其让服务端报错，不如在这里就不可能发生。
+    rows.forEach((row) => {
+      const button = row.querySelector(".mode-remove");
+      if (button) button.disabled = rows.length <= 1;
+    });
+  };
+
+  addButton.addEventListener("click", () => {
+    const last = container.querySelector(".mode-row:last-child");
+    if (!last) return;
+    const copy = last.cloneNode(true);
+    // cloneNode 复制的是 HTML 属性而不是当前选中状态，
+    // 所以要把用户刚选的值手工搬过去，否则新行永远是第一个选项。
+    const sources = last.querySelectorAll("select");
+    copy.querySelectorAll("select").forEach((select, index) => {
+      select.value = sources[index].value;
+    });
+    container.appendChild(copy);
+    refresh();
+    copy.querySelector("select").focus();
+  });
+
+  container.addEventListener("click", (event) => {
+    const button = event.target.closest(".mode-remove");
+    if (!button) return;
+    button.closest(".mode-row").remove();
+    refresh();
+  });
+
+  refresh();
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  setupModeRows();
+
   document.querySelectorAll("[data-load-url]").forEach((button) => {
     button.addEventListener("click", async () => {
       const target = document.querySelector(button.dataset.target);

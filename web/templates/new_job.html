@@ -6,7 +6,7 @@
 
 <h2>新建测试</h2>
 <p class="hint">
-  选一组用例、一个被测产品和一个模型，提交后由后台 Worker 串行执行。
+  选一组用例和一到多个模式（产品 × 模型），提交后由后台 Worker 串行执行。
   关掉页面不影响跑批。用例来自版本化的 <code>{{ catalog_path }}</code>。
 </p>
 
@@ -18,7 +18,10 @@
   <label>
     <span>① 实验名称</span>
     <input name="experiment_name" value="{{ default_name }}" required maxlength="128">
-    <small>同名的任务会归到同一份报告里，方便横向对比——想对比就故意取同一个名字。</small>
+    <small>
+      报告按实验名合并（<code>suite_id</code> 就是它的哈希）。下面选的几个模式共用这一个名字，
+      所以一次提交就出一份对比报告；想把以后补跑的轮次并进来，再取同一个名字即可。
+    </small>
   </label>
 
   <fieldset>
@@ -53,23 +56,7 @@
     {% endif %}
   </fieldset>
 
-  <fieldset>
-    <legend>③ 测哪个产品</legend>
-    <div class="picker">
-      {% for key, title, note in products %}
-      <label class="pick">
-        <input type="radio" name="product" value="{{ key }}" {% if loop.first %}checked{% endif %}>
-        <span class="pick-body">
-          <span class="pick-title">{{ title }} <code>{{ key }}</code></span>
-          <span class="pick-desc">{{ note }}</span>
-        </span>
-      </label>
-      {% endfor %}
-    </div>
-    <small>前置检查由对应的驱动自己做，产品没在跑会在任务日志里直接说明原因。</small>
-  </fieldset>
-
-  {# 前置检查只对 YonWork 有意义，所以放在产品下面而不是页面顶部——
+  {# 前置检查只对 YonWork 有意义，所以放在这里而不是页面顶部——
      放顶部会让人以为「不就绪就什么都跑不了」。 #}
   <div class="runtime {% if runtime.ok and runtime.logged_in %}ready{% else %}not-ready{% endif %}">
     <strong>YonWork 状态</strong>
@@ -80,28 +67,53 @@
     {% endif %}
   </div>
 
-  <label>
-    <span>④ 用哪个模型</span>
-    <select name="model_query">
-      <option value="">产品当前的默认模型</option>
-      {% for model in runtime.models %}
-      <option value="{{ model.choice_id or model.model_id }}">
-        {{ model.display_name or model.model_id }}{% if model.is_default %}（默认）{% endif %}
-      </option>
-      {% endfor %}
-    </select>
+  <fieldset>
+    <legend>③ 测哪几个模式</legend>
+    <p class="hint" style="margin-top:0">
+      一个模式 = 一个（产品 × 模型）组合，跑出来是一个批次。
+      加几行就一次提交几个模式，<strong>共用这一个实验名</strong>，
+      所以它们会落进同一份报告，可以直接横向对比。
+      Worker 串行执行，按这里的先后顺序跑。
+    </p>
+
+    {# 模式行：两个重复字段按下标配对。JS 只负责增删行，
+       不参与取值——关掉 JS 也还剩第一行能正常提交。 #}
+    <div id="mode-rows" class="mode-rows">
+      <div class="mode-row">
+        <select name="mode_product" aria-label="产品">
+          {% for key, title, note in products %}
+          <option value="{{ key }}" title="{{ note }}">{{ title }}</option>
+          {% endfor %}
+        </select>
+        <select name="mode_model" aria-label="模型">
+          <option value="">产品当前的默认模型</option>
+          {% for model in runtime.models %}
+          <option value="{{ model.choice_id or model.model_id }}">
+            {{ model.display_name or model.model_id }}{% if model.is_default %}（默认）{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        <button type="button" class="mode-remove" title="删掉这一行">移除</button>
+      </div>
+    </div>
+
+    <div class="actions" style="margin-top:8px">
+      <button type="button" id="mode-add" class="button">＋ 再加一个模式</button>
+      <span class="hint" style="margin:0">同一个组合选两次会被提交拦下——重复跑会让报告里那一列的轮次凭空翻倍。</span>
+    </div>
+
     <small>
-      {% if runtime.models %}
-        想做模型对比，就用同一个实验名跑两次、每次换一个模型。
-      {% else %}
-        YonWork 就绪后这里才会列出可选模型；现在提交会走默认模型。
+      {% if not runtime.models %}
+        YonWork 就绪后模型下拉才会有内容；现在提交都会走默认模型。
       {% endif %}
+      产品的前置检查由各自的驱动做。WorkBuddy 需要 Worker 跑在宿主机上，
+      容器里的 Worker 起不了它——那一个模式会失败，但<strong>不影响同组的其它模式</strong>。
     </small>
-  </label>
+  </fieldset>
 
   <div class="form-grid">
     <label>
-      <span>单轮超时</span>
+      <span>④ 单轮超时</span>
       <input name="timeout_seconds" type="number" min="1" step="1" value="600" required>
       <small>秒。超过就判 Timeout，不会拖垮整批。</small>
     </label>

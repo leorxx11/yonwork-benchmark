@@ -284,6 +284,24 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .pick-cases code { margin-right: 6px; }
 .pick-warn { font-size: 11px; color: #9a6200; }
 
+/* 模式行：产品 × 模型各一个下拉，一行一个模式。
+   两列等宽而不是自适应——模型名长短差很多，自适应会让每行的
+   「移除」按钮左右横跳，一眼看不出这几行是同一组。 */
+.mode-rows { display: grid; gap: 8px; }
+.mode-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; }
+.mode-row select { margin: 0; }
+.mode-remove {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.mode-remove:hover:not(:disabled) { border-color: #a8071a; color: #a8071a; }
+.mode-remove:disabled { opacity: .4; cursor: not-allowed; }
+
 .panel.empty { text-align: center; padding: 28px 20px; }
 .panel.empty p { margin: 0 0 14px; color: var(--text-secondary); font-size: 13px; }
 .steps {

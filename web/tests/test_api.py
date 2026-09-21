@@ -3,12 +3,26 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from starlette.requests import Request
 
 from web import api
 
 
 class WebApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        """顶栏那条「后台还在跑」要断掉，否则这套测试根本不是离线的。
+
+        `_render` 一律调 `_active_job()` → `job_store.ensure_schema()`，
+        本机 MySQL 恰好起着的时候它就会**真的连库并执行 DDL**——
+        2026-09-21 实测：跑一次 web 单测就把 plan_* 三列 ALTER 进了实验库。
+        库没起时它被 DatabaseError 兜住返回 None，所以这件事一直没人发现，
+        测试结果还会随「容器开没开」而不同。
+        """
+        patcher = patch("web.api._active_job", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @staticmethod
     def _request(path: str) -> Request:
         return Request(
@@ -226,6 +240,171 @@ class WebApiTests(unittest.TestCase):
         )
         self.assertEqual(303, response.status_code)
         self.assertEqual("会话分裂验证", create.call_args.args[0].experiment_name)
+
+    # ---- 跨模式一键编排 ----
+
+    @patch("web.api.create_plan", return_value={"plan_id": "p" * 32})
+    @patch(
+        "web.api._runtime_context",
+        return_value={
+            "ok": True, "logged_in": True, "endpoint": "", "version": "",
+            "models": [], "problem": "",
+        },
+    )
+    def test_multiple_modes_become_one_plan(self, _runtime, create) -> None:
+        response = api.submit_job(
+            self._request("/jobs"),
+            experiment_name="四模式对比",
+            case_set_id="smoke",
+            mode_product=["yonwork", "yonwork", "workbuddy"],
+            mode_model=["newapi", "", ""],
+            timeout_seconds="60",
+            limit_runs="0",
+            collect_usage=True,
+            export_xlsx=True,
+        )
+        self.assertEqual(303, response.status_code)
+        self.assertEqual(f"/plans/{'p' * 32}", response.headers["location"])
+        spec = create.call_args.args[0]
+        self.assertEqual(3, len(spec.modes))
+        # 顺序就是执行顺序，不能被去重/排序打乱
+        self.assertEqual(
+            [("yonwork", "newapi"), ("yonwork", ""), ("workbuddy", "")],
+            [mode.key for mode in spec.modes],
+        )
+
+    @patch("web.api.create_job", return_value={"job_id": "abc123"})
+    @patch(
+        "web.api._runtime_context",
+        return_value={
+            "ok": True, "logged_in": True, "endpoint": "", "version": "",
+            "models": [], "problem": "",
+        },
+    )
+    def test_single_mode_still_creates_a_plain_job(self, _runtime, create) -> None:
+        """一个模式不该被包成计划——那会给最常见的路径多一次跳转。"""
+        response = api.submit_job(
+            self._request("/jobs"),
+            experiment_name="单模式",
+            case_set_id="smoke",
+            mode_product=["yonwork"],
+            mode_model=["newapi"],
+            timeout_seconds="60",
+            limit_runs="0",
+            collect_usage=True,
+            export_xlsx=True,
+        )
+        self.assertEqual("/jobs/abc123", response.headers["location"])
+        self.assertEqual("newapi", create.call_args.args[0].model_query)
+
+    @patch(
+        "web.api._runtime_context",
+        return_value={
+            "ok": True, "logged_in": True, "endpoint": "", "version": "",
+            "models": [], "problem": "",
+        },
+    )
+    def test_mismatched_mode_columns_are_rejected(self, _runtime) -> None:
+        """两个重复字段按下标配对，长度对不上就不能猜着配——配错了跑的是别的模型。"""
+        response = api.submit_job(
+            self._request("/jobs"),
+            experiment_name="四模式对比",
+            case_set_id="smoke",
+            mode_product=["yonwork", "workbuddy"],
+            mode_model=["newapi"],
+            timeout_seconds="60",
+            limit_runs="0",
+            collect_usage=True,
+            export_xlsx=True,
+        )
+        self.assertEqual(400, response.status_code)
+        self.assertIn("对不上", response.body.decode())
+
+    @patch(
+        "web.api._runtime_context",
+        return_value={
+            "ok": True, "logged_in": True, "endpoint": "", "version": "",
+            "models": [], "problem": "",
+        },
+    )
+    def test_unknown_product_in_a_mode_row_is_rejected(self, _runtime) -> None:
+        response = api.submit_job(
+            self._request("/jobs"),
+            experiment_name="四模式对比",
+            case_set_id="smoke",
+            mode_product=["yonwork", "copilot"],
+            mode_model=["", ""],
+            timeout_seconds="60",
+            limit_runs="0",
+            collect_usage=True,
+            export_xlsx=True,
+        )
+        self.assertEqual(400, response.status_code)
+        self.assertIn("copilot", response.body.decode())
+
+    @patch("web.api.plan_jobs")
+    def test_plan_page_aggregates_progress_and_links_one_report(self, jobs) -> None:
+        jobs.return_value = [
+            {
+                "job_id": "j1", "plan_id": "p1", "plan_position": 0,
+                "plan_label": "yonwork / newapi", "batch_id": "b1",
+                "experiment_name": "四模式对比", "case_set_id": "smoke",
+                "product": "yonwork", "model_query": "newapi",
+                "status": "Completed", "completed_runs": 4, "total_runs": 4,
+                "suite_id": "suite-1", "error": "",
+            },
+            {
+                "job_id": "j2", "plan_id": "p1", "plan_position": 1,
+                "plan_label": "workbuddy / 默认模型", "batch_id": "b2",
+                "experiment_name": "四模式对比", "case_set_id": "smoke",
+                "product": "workbuddy", "model_query": "",
+                "status": "Running", "completed_runs": 1, "total_runs": 4,
+                "suite_id": None, "error": "",
+            },
+        ]
+        response = api.plan_status(self._request("/plans/p1/status"), "p1")
+        body = response.body.decode()
+        self.assertEqual(200, response.status_code)
+        self.assertIn("5/8", body)          # 累计轮次跨模式相加
+        self.assertIn("1/2", body)          # 已结束的模式
+        self.assertIn('href="/suite/suite-1"', body)
+        self.assertIn('href="/matrix/suite-1"', body)
+        # 还没跑完就不该让浏览器停轮询
+        self.assertNotIn("X-Benchmark-Poll", response.headers)
+
+    @patch("web.api.plan_jobs")
+    def test_one_failed_mode_does_not_stall_the_plan(self, jobs) -> None:
+        """一个模式挂了，整组照样算「已全部结束」，报告里只是缺那一列。"""
+        jobs.return_value = [
+            {
+                "job_id": "j1", "plan_id": "p1", "plan_position": 0,
+                "plan_label": "yonwork / newapi", "batch_id": "b1",
+                "experiment_name": "四模式对比", "case_set_id": "smoke",
+                "product": "yonwork", "model_query": "newapi",
+                "status": "Completed", "completed_runs": 4, "total_runs": 4,
+                "suite_id": "suite-1", "error": "",
+            },
+            {
+                "job_id": "j2", "plan_id": "p1", "plan_position": 1,
+                "plan_label": "workbuddy / 默认模型", "batch_id": "b2",
+                "experiment_name": "四模式对比", "case_set_id": "smoke",
+                "product": "workbuddy", "model_query": "",
+                "status": "Failed", "completed_runs": 0, "total_runs": 4,
+                "suite_id": None, "error": "容器里的 Worker 起不了 Windows 进程",
+            },
+        ]
+        response = api.plan_status(self._request("/plans/p1/status"), "p1")
+        body = response.body.decode()
+        self.assertEqual("stop", response.headers["X-Benchmark-Poll"])
+        self.assertIn('href="/suite/suite-1"', body)
+        # 失败原因写在它自己那一行，不汇总到计划层
+        self.assertIn("起不了 Windows 进程", body)
+
+    @patch("web.api.plan_jobs", return_value=[])
+    def test_unknown_plan_is_404(self, _jobs) -> None:
+        with self.assertRaises(HTTPException) as caught:
+            api.plan_detail(self._request("/plans/nope"), "nope")
+        self.assertEqual(404, caught.exception.status_code)
 
     @patch("web.api.list_events", return_value=[])
     @patch("web.api.get_job")
