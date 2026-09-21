@@ -1,8 +1,8 @@
 <div class="tiles">
   <div class="tile"><div class="value text"><span class="job-state s-{{ job.status }}">{{ job.status }}</span></div><div class="label">任务状态</div></div>
   <div class="tile"><div class="value">{{ job.completed_runs }}/{{ job.total_runs or '—' }}</div><div class="label">已完成轮次</div></div>
+  <div class="tile"><div class="value text">{{ job.product }}</div><div class="label">产品</div></div>
   <div class="tile"><div class="value text">{{ job.model_query or '默认模型' }}</div><div class="label">模型</div></div>
-  <div class="tile"><div class="value text">{{ job.case_set_id }}</div><div class="label">Case Set</div></div>
 </div>
 
 {% if job.total_runs %}
@@ -14,11 +14,16 @@
 {% if job.error %}<div class="notice error">{{ job.error }}</div>{% endif %}
 
 <div class="actions">
-  {% if job.suite_id %}<a class="button primary" href="/suite/{{ job.suite_id }}">查看报告</a>{% endif %}
+  {% if job.suite_id %}
+    <a class="button primary" href="/suite/{{ job.suite_id }}">查看测试报告</a>
+  {% elif job.status == 'Completed' %}
+    <span class="hint" style="margin:0">这批没有可入库的结果，所以没有报告。</span>
+  {% endif %}
   {% if job.status in ['Queued', 'Running'] %}
   <form method="post" action="/jobs/{{ job.job_id }}/cancel">
     <button class="danger" type="submit">停止任务</button>
   </form>
+  <span class="hint" style="margin:0">停止只影响还没开始的轮次，已跑完的照常入库。</span>
   {% endif %}
 </div>
 
@@ -27,6 +32,6 @@
   {% for event in events %}
   <div class="event {{ event.level }}"><time>{{ event.created_at }}</time><span>{{ event.message }}</span></div>
   {% else %}
-  <div class="hint">暂无日志</div>
+  <div class="hint" style="padding:10px">还没有日志。任务在队列里等 Worker 领取，通常几秒内开始。</div>
   {% endfor %}
 </div>

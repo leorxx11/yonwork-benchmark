@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
+{% set nav = 'reports' %}
 {% block title %}{{ run.benchmark_id }}{% endblock %}
 {% block crumb %}
-  <a href="/">全部实验</a> /
+  <a href="/">测试报告</a> /
   {% if run.suite_id %}<a href="/suite/{{ run.suite_id }}">{{ run.suite_name }}</a> / {% endif %}
   {{ run.benchmark_id }}
 {% endblock %}

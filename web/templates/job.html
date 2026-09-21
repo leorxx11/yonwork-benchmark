@@ -1,11 +1,18 @@
 {% extends "base.html" %}
+{% set nav = 'jobs' %}
 {% block title %}任务 {{ job.job_id[:8] }}{% endblock %}
-{% block crumb %}<a href="/jobs">测试任务</a> / {{ job.job_id[:8] }}{% endblock %}
+{% block crumb %}<a href="/jobs">测试任务</a> / {{ job.experiment_name }}{% endblock %}
 {% block body %}
 
 <h2>{{ job.experiment_name }}</h2>
-<p class="hint"><code>{{ job.batch_id }}</code></p>
+<p class="hint">
+  批次 <code>{{ job.batch_id }}</code> ·
+  用例集 <code>{{ job.case_set_id }}</code> ·
+  产品 <code>{{ job.product }}</code>
+</p>
 
+{# 状态整块每 2 秒换一次。轮询失败的提示由 app.js 插在这个容器**外面**，
+   否则会连带把进度条、报告链接和「停止任务」按钮一起抹掉。 #}
 <div id="job-status"
      data-poll-url="/jobs/{{ job.job_id }}/status"
      data-poll-interval="2000">

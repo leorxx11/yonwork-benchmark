@@ -1,38 +1,49 @@
 {% extends "base.html" %}
-{% block crumb %}全部对比实验{% endblock %}
+{% set nav = 'reports' %}
+{% block title %}测试报告{% endblock %}
+{% block crumb %}测试报告{% endblock %}
 {% block body %}
 
 <div class="page-actions">
   <div>
-    <h2>对比实验</h2>
-    <p class="hint">一个 suite = 一次对比实验，下面挂着多个产品 × 模型批次。</p>
+    <h2>测试报告</h2>
+    <p class="hint">
+      一份报告 = 一个实验名下的全部批次。用同一个实验名跑不同的产品或模型，
+      它们就会并排出现在同一份报告里，可以直接横着比。
+    </p>
   </div>
-  <a class="button primary" href="/jobs/new">开始测试</a>
+  <a class="button primary" href="/jobs/new">新建测试</a>
 </div>
 
 {% if suites %}
 <table>
   <tr>
-    <th>名称</th><th class="num">批次</th><th class="num">轮次</th>
-    <th class="num">非 Pass</th><th>创建时间(UTC)</th><th></th>
+    <th>实验名称</th><th class="num">批次</th><th class="num">轮次</th>
+    <th class="num">非 Pass</th><th>创建时间(UTC)</th><th>其它视图</th>
   </tr>
   {% for item in suites %}
   <tr>
-    <td><a href="/suite/{{ item.suite_id }}">{{ item.name }}</a></td>
+    <td><a href="/suite/{{ item.suite_id }}"><strong>{{ item.name }}</strong></a></td>
     <td class="num">{{ item.batch_count | int }}</td>
     <td class="num">{{ item.run_count | int }}</td>
-    <td class="num">{{ (item.bad_count or 0) | int }}</td>
+    <td class="num {% if not item.bad_count %}missing{% endif %}">{{ (item.bad_count or 0) | int }}</td>
     <td>{{ item.created_at }}</td>
     <td>
-      <a href="/matrix/{{ item.suite_id }}">矩阵</a> ·
-      <a href="/reconcile/{{ item.suite_id }}">对账</a>
+      <a href="/matrix/{{ item.suite_id }}" title="同一个 prompt 在各模式下分别是什么结果">矩阵</a> ·
+      <a href="/reconcile/{{ item.suite_id }}" title="三个 token 来源逐轮对账">对账</a>
     </td>
   </tr>
   {% endfor %}
 </table>
 {% else %}
-<div class="panel">
-  还没有数据。可以从 <a href="/jobs/new">开始测试</a> 创建第一批任务。
+<div class="panel empty">
+  <p>还没有任何结果。整条链路是三步：</p>
+  <ol class="steps">
+    <li><strong>新建测试</strong>——选用例集、产品和模型，提交进队列。</li>
+    <li><strong>测试任务</strong>——后台 Worker 串行跑，页面上能看实时日志。</li>
+    <li><strong>测试报告</strong>——跑完自动入库，回到这一页就能看到。</li>
+  </ol>
+  <a class="button primary" href="/jobs/new">开始第一次测试</a>
 </div>
 {% endif %}
 

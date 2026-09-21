@@ -10,11 +10,31 @@
 <body>
 <header class="top">
   <div class="topline">
-    <h1><a href="/" style="text-decoration:none">YonWork 基准测试</a></h1>
-    <nav><a href="/jobs/new">开始测试</a><a href="/jobs">任务</a><a href="/">报告</a></nav>
+    <h1><a href="/">基准测试控制台</a></h1>
+    {# 导航就是流程顺序：配好用例 → 跑一次 → 看结果。
+       三个词在整站统一，别在标题里再换一套叫法（原来 nav 叫「报告」、
+       页面标题叫「对比实验」、面包屑叫「全部实验」，同一个东西三个名字）。 #}
+    <nav>
+      <a href="/jobs/new" {% if nav == 'new' %}class="here"{% endif %}>① 新建测试</a>
+      <a href="/jobs" {% if nav == 'jobs' %}class="here"{% endif %}>② 测试任务</a>
+      <a href="/" {% if nav == 'reports' %}class="here"{% endif %}>③ 测试报告</a>
+    </nav>
   </div>
   <div class="crumb">{% block crumb %}{% endblock %}</div>
 </header>
+
+{# 后台跑批不依赖页面开着，所以必须有个离开任务页也看得见的提示——
+   否则用户不知道还在跑，会重复提交，而 Worker 是串行的，只会排队。 #}
+{% if active_job %}
+<a class="running-bar" href="/jobs/{{ active_job.job_id }}">
+  <span class="job-state s-{{ active_job.status }}">{{ active_job.status }}</span>
+  <strong>{{ active_job.experiment_name }}</strong>
+  <span>{{ active_job.completed_runs }}/{{ active_job.total_runs or '—' }} 轮</span>
+  <span class="grow"></span>
+  <span>查看进度 →</span>
+</a>
+{% endif %}
+
 <main>
 {% block body %}{% endblock %}
 </main>

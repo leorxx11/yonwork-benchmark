@@ -20,7 +20,16 @@ from runner.case_catalog import (
 )
 from runner.catalog import CatalogError, list_model_choices
 from runner.discovery import DiscoveryError, discover, has_session, health_check, session_status
-from runner.job_store import NewJob, create_job, get_job, list_events, list_jobs, request_cancel
+from runner.drivers import DRIVERS
+from runner.job_store import (
+    NewJob,
+    active_job,
+    create_job,
+    get_job,
+    list_events,
+    list_jobs,
+    request_cancel,
+)
 from runner.transport import TransportError
 
 from . import queries
@@ -34,6 +43,20 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 VERDICT_ORDER = ("Pass", "Fail", "Timeout", "Error", "Invalid")
 CASE_CATALOG_PATH = Path(os.environ.get("BENCH_CASE_CATALOG", str(DEFAULT_CATALOG_PATH)))
+
+# 页面上给产品配的说明。跑批链路只认 runner.drivers.DRIVERS 的键，
+# 这里只负责把「选它会发生什么」讲清楚——尤其是有附加条件的那条。
+#
+# ⚠️ **顺序有意义**：表单里第一个是默认选中项，所以主链路必须排第一。
+# 按字母排的话 workbuddy 会跑到前面，而它在容器里的 Worker 上根本跑不了，
+# 等于把一个默认会失败的选项设成了默认。
+PRODUCTS = (
+    ("yonwork", "YonWork 桌面端", "Host API + SSE，主链路，已实测"),
+    # 容器里的 Worker 起不了 Windows 进程，所以这里必须把条件写在选项上——
+    # 不写的话用户只会看到一条语焉不详的失败日志。
+    ("workbuddy", "WorkBuddy 桌面端",
+     "每轮一个 headless CLI 进程。需要 Worker 跑在宿主机上，容器里的 Worker 起不了它"),
+)
 
 
 def _fmt_ms(value: Any) -> str:
@@ -50,6 +73,18 @@ templates.env.filters["ms"] = _fmt_ms
 templates.env.filters["num"] = _fmt_int
 
 
+def _active_job() -> dict[str, Any] | None:
+    """顶栏那条「后台还在跑」。
+
+    连不上库时**返回 None 而不是抛**：这是个提示条，不该让
+    `/jobs/new` 这种本来不碰库的页面跟着一起打不开。
+    """
+    try:
+        return active_job()
+    except DatabaseError:
+        return None
+
+
 def _render(
     request: Request,
     name: str,
@@ -60,7 +95,11 @@ def _render(
     return templates.TemplateResponse(
         request=request,
         name=name,
-        context={"verdict_order": VERDICT_ORDER, **context},
+        context={
+            "verdict_order": VERDICT_ORDER,
+            "active_job": _active_job(),
+            **context,
+        },
         status_code=status_code,
     )
 
@@ -106,6 +145,8 @@ def _job_form_context(error: str = "") -> dict[str, Any]:
         "catalog_path": CASE_CATALOG_PATH,
         "catalog_problem": catalog_problem,
         "default_name": datetime.now().strftime("benchmark-%Y%m%d-%H%M"),
+        # 只列真的有驱动的，免得页面上摆着一个提交就报错的选项。
+        "products": [item for item in PRODUCTS if item[0] in DRIVERS],
         "error": error,
     }
 
@@ -162,6 +203,7 @@ def submit_job(
     request: Request,
     experiment_name: str = Form(...),
     case_set_id: str = Form(...),
+    product: str = Form("yonwork"),
     model_query: str = Form(""),
     timeout_seconds: str = Form("600"),
     limit_runs: str = Form("0"),
@@ -169,6 +211,8 @@ def submit_job(
     export_xlsx: bool = Form(False),
 ) -> HTMLResponse:
     try:
+        if product not in DRIVERS:
+            raise ValueError(f"没有名为 {product!r} 的产品驱动")
         selected = load_catalog(CASE_CATALOG_PATH).get(case_set_id)
         # Web 和 Worker 使用同一套环境；这里提前拦住未配置的路径占位符。
         resolve_case_set(selected)
@@ -177,6 +221,7 @@ def submit_job(
                 experiment_name=experiment_name,
                 case_set_id=case_set_id,
                 case_catalog_path=str(CASE_CATALOG_PATH),
+                product=product,
                 model_query=model_query,
                 timeout_seconds=_number_field(timeout_seconds, "单轮超时", default=600),
                 limit_runs=int(_number_field(limit_runs, "最多运行轮次", default=0)),

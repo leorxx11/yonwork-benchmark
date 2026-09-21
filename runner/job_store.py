@@ -272,6 +272,24 @@ def request_cancel(job_id: str) -> bool:
     return changed
 
 
+def active_job() -> dict[str, Any] | None:
+    """当前在队列里或正在跑的那一条。
+
+    Worker 被咨询锁强制串行，所以「活跃任务」最多一条有意义的——
+    取最早排队的那条，它就是 Worker 正在处理或马上要处理的。
+    页面顶栏靠它告诉用户「后台还在跑」，否则离开任务页就完全失去感知。
+    """
+    ensure_schema()
+    with connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT job_id, experiment_name, status, completed_runs, total_runs"
+                " FROM benchmark_jobs WHERE status IN ('Queued','Running')"
+                " ORDER BY created_at ASC LIMIT 1"
+            )
+            return cursor.fetchone()
+
+
 def is_cancel_requested(job_id: str) -> bool:
     with connect() as connection:
         with connection.cursor() as cursor:

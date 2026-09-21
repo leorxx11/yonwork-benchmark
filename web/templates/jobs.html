@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% set nav = 'jobs' %}
 {% block title %}测试任务{% endblock %}
 {% block crumb %}测试任务{% endblock %}
 {% block body %}
@@ -6,31 +7,42 @@
 <div class="page-actions">
   <div>
     <h2>测试任务</h2>
-    <p class="hint">任务由独立 Worker 串行执行，刷新或关闭页面不会中断跑批。</p>
+    <p class="hint">
+      一条任务 = 一次跑批。由独立 Worker <strong>串行</strong>执行，
+      所以同时提交多条只会排队，不会并发——刷新或关掉页面都不影响。
+    </p>
   </div>
-  <a class="button primary" href="/jobs/new">新建任务</a>
+  <a class="button primary" href="/jobs/new">新建测试</a>
 </div>
 
 {% if jobs %}
 <table>
   <tr>
-    <th>实验</th><th>Case Set</th><th>模型</th><th>状态</th>
-    <th class="num">进度</th><th>创建时间(UTC)</th><th></th>
+    <th>实验</th><th>用例集</th><th>产品 / 模型</th><th>状态</th>
+    <th class="num">进度</th><th>创建时间(UTC)</th><th>去哪看</th>
   </tr>
   {% for job in jobs %}
   <tr>
     <td>{{ job.experiment_name }}</td>
     <td><code>{{ job.case_set_id }}</code></td>
-    <td>{{ job.model_query or '智能体默认' }}</td>
+    <td>{{ job.product }} / {{ job.model_query or '默认' }}</td>
     <td><span class="job-state s-{{ job.status }}">{{ job.status }}</span></td>
     <td class="num">{{ job.completed_runs }}/{{ job.total_runs or '—' }}</td>
     <td>{{ job.created_at }}</td>
-    <td><a href="/jobs/{{ job.job_id }}">详情</a></td>
+    <td>
+      {# 跑完之后最该点的是报告，原来这一列只有「详情」，
+         要先进任务页才能再点一次才到报告。 #}
+      <a href="/jobs/{{ job.job_id }}">执行日志</a>
+      {% if job.suite_id %} · <a href="/suite/{{ job.suite_id }}"><strong>测试报告</strong></a>{% endif %}
+    </td>
   </tr>
   {% endfor %}
 </table>
 {% else %}
-<div class="panel">还没有任务。</div>
+<div class="panel empty">
+  <p>还没有跑过任何任务。</p>
+  <a class="button primary" href="/jobs/new">新建第一个测试</a>
+</div>
 {% endif %}
 
 {% endblock %}

@@ -1,8 +1,23 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
+{% set nav = 'reports' %}
 {% block title %}{{ suite.name }}{% endblock %}
-{% block crumb %}<a href="/">全部实验</a> / {{ suite.name }}{% endblock %}
+{% block crumb %}<a href="/">测试报告</a> / {{ suite.name }}{% endblock %}
 {% block body %}
+
+<div class="page-actions">
+  <div>
+    <h2>{{ suite.name }}</h2>
+    <p class="hint">
+      一个<strong>模式</strong> = 一个产品 × 一个模型。同一个模式跑过多个批次时会合并统计，
+      所以下面的行数是模式数，不是批次数。
+    </p>
+  </div>
+  <div class="actions" style="margin:0">
+    <a class="button" href="/matrix/{{ suite.suite_id }}">用例矩阵</a>
+    <a class="button" href="/reconcile/{{ suite.suite_id }}">用量对账</a>
+  </div>
+</div>
 
 {% set total = modes | map(attribute='total') | map('int') | sum %}
 {% set passed = modes | map(attribute='pass_count') | map('int') | sum %}
