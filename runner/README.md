@@ -1,102 +1,107 @@
 # runner —— YonWork Host API 基准测试驱动
 
-纯 Python + HTTP，不碰界面。只依赖 `openpyxl`（读提示词表和导 xlsx），其余全是标准库。
+纯 Python + HTTP，不碰界面。默认从 `cases/catalog.yaml` 读取用例；Excel 只作为兼容输入和
+结果导出格式保留。
 
 ## 跑起来
 
 ```bash
-# 一次性：建 venv（WSL 侧的 python3）
-python3 -m venv .venv && .venv/bin/pip install -r runner/requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r runner/requirements.txt
 
-# 前置检查 + 用例展开，不发请求
+# 默认读取 cases/catalog.yaml 的 smoke 用例集
+.venv/bin/python -m runner --case-set smoke --dry-run
+.venv/bin/python -m runner --case-set smoke --out-dir results
+
+# 指定 catalog，或兼容旧 Excel
+.venv/bin/python -m runner --cases cases/catalog.yaml --case-set long-text --dry-run
 .venv/bin/python -m runner --workbook cases/yonwork_benchmark.xlsx --sheet Cases --dry-run
-
-# 真跑
-.venv/bin/python -m runner --workbook cases/yonwork_benchmark.xlsx --sheet Cases --out-dir results
 ```
+
+前端提交的任务由 `python -m runner.worker` 串行执行。通常直接使用根目录的
+`./scripts/bootstrap.sh`，不需要手工启动 worker。
 
 产物落在 `<out-dir>/<batch-id>/`：
 
 | 文件 | 内容 |
 |---|---|
-| `results.jsonl` | 一轮一行，**跑完一轮立刻追加** |
-| `results.db` | 整批结束后由 JSONL 汇总而成，可重建 |
+| `results.jsonl` | 一轮一行，跑完一轮立即追加，是事实来源 |
+| `results.db` | 整批结束后由 JSONL 汇总，可重建 |
 | `results.xlsx` | Results / Checks / Summary 三张表 |
-| `transcripts/<BenchmarkId>.sse.jsonl` | 每轮的 SSE 原始流（`--no-transcript` 可关） |
+| `transcripts/<BenchmarkId>.sse.jsonl` | 每轮 SSE 原始流（`--no-transcript` 可关闭） |
 
-退出码：`0` 全过、`1` 有 Fail、`2` 有 Timeout、`3` 有 Error、`4` 有 Invalid、`64` 参数或前置条件问题。
-多种结论并存时取最严重的那个（Invalid > Error > Timeout > Fail）。
+CLI 退出码：`0` 全过、`1` 有 Fail、`2` 有 Timeout、`3` 有 Error、`4` 有 Invalid、
+`64` 参数或前置条件问题。多种结论并存时取最严重的一种。
+
+## YAML 用例结构
+
+```yaml
+version: 1
+case_sets:
+  smoke:
+    description: 最小冒烟
+    cases:
+      - name: hello
+        prompt: 请只回复：你好
+        runs: 1
+        enabled: true
+        assertions:
+          expect: [你好]
+          forbid: [无法完成]
+          min_length: 2
+          max_seconds: 60
+```
+
+支持的断言字段为 `expect`、`forbid`、`min_length`、`json_parsable`、`max_seconds`、
+`max_total_tokens` 和 `max_input_tokens`。catalog 会拒绝未知字段、重复用例名、非法类型和
+不存在的环境变量，避免拼写错误被静默忽略。
+机器相关路径写成 `${YONWORK_XIYOUJI_PATH}`，在 `.env` 中提供值。
+
+内容层只做弱断言；模型输出不确定，过强的逐字断言会制造噪声。
+
+**token 阈值按 Case 定，没有全局底噪。** 曾经有个「20832 × 2」的全局天花板，
+实测证伪了：同一句「你好！」inputTokens 在 5,514 ～ 16,238 之间，
+长文本用例同一轮 session-jsonl 记 30,082、NewAPI 记 228,354。
+不设 `max_input_tokens` / `max_total_tokens` 时，对应断言**只记录实测值和来源，不判定**——
+这些记录就是将来定分位数基线的原料。别为了让断言"有输出"而填一个拍脑袋的数。
 
 ## 模块
 
 | 文件 | 职责 |
 |---|---|
-| `discovery.py` | 从 `host-api-runtime.json` 读 port/token；健康探测、登录态探测 |
-| `transport.py` | HTTP 收发；**空 ProxyHandler 绕开 `http_proxy`** |
-| `client.py` | `POST /api/chat/send` 的 SSE 客户端，终止判定在这 |
-| `cases.py` | 读提示词表（openpyxl） |
-| `usage.py` | 端上 `/api/usage/recent-token-history` 取样（时间窗匹配） |
-| `sessionlog.py` | 会话 JSONL 取样（按 `idempotencyKey` **精确**匹配，覆盖全部模式） |
-| `newapi.py` | NewAPI 后台日志取样（时间窗匹配，只覆盖走 newapi 的轮次） |
-| `ingest.py` | JSONL → MySQL，幂等，`--rebuild` 可全量重放 |
+| `case_catalog.py` | 严格读取 YAML catalog、选择用例集、展开环境变量 |
+| `cases.py` | 旧 Excel 输入兼容层 |
+| `discovery.py` | 从 `host-api-runtime.json` 读 port/token，探测健康和登录态 |
+| `transport.py` | HTTP 收发；空 ProxyHandler 绕开环境代理 |
+| `client.py` | `POST /api/chat/send` 的 SSE 客户端和终止判定 |
+| `batch.py` | 每轮隔离、逐轮落盘、进度回调和协作式停止 |
+| `job_store.py` | MySQL 持久任务队列、事件和进度 |
+| `worker.py` | 领取任务、跑批、生成报告、入库与对账 |
+| `usage.py` | 端上用量取样（时间窗匹配） |
+| `sessionlog.py` | 会话 JSONL 用量（按 `idempotencyKey` 精确匹配） |
+| `newapi.py` | NewAPI 后台日志取样 |
+| `ingest.py` | JSONL → MySQL，幂等，`--rebuild` 可重放 |
 | `reconcile.py` | 事后补采会话 JSONL 与 NewAPI 后台用量 |
 | `assertions/` | 五层断言：完成性 → 产物 → 日志 → 内容 → 成本与性能 |
-| `batch.py` | 编排：每轮新 sessionKey、每轮 try/except 隔离、逐轮落盘 |
-| `report.py` | JSONL → SQLite → xlsx |
-| `__main__.py` | CLI |
+| `report.py` | JSONL → SQLite → XLSX |
 
-**驱动层（discovery/transport/client）不下任何判定**，只发请求、收原材料、记时间窗；
-判定全在 `assertions/`，可单测、可 diff。别把判断写回驱动层。
+驱动层只发请求、收原材料、记时间窗；判定全部留在 `assertions/`，以便单测和 diff。
 
-## 提示词表结构
+## 三个容易踩的点
 
-前四列沿用 `cases/yonwork_benchmark.xlsx` 现有的 `CaseName | Prompt | Runs | Enabled`，
-后面可选加断言参数列（没有就用默认值），多值用 `|` 分隔：
-
-| 列 | 作用 |
-|---|---|
-| `Expect` | 期望关键词，缺一个就 Fail |
-| `Forbid` | 禁止词，命中就 Fail |
-| `MinLength` | 答案长度下限 |
-| `JsonParsable` | 答案（或其中的 ```json 围栏）必须可解析 |
-| `MaxSeconds` | 单轮耗时阈值 |
-| `MaxTotalTokens` | 单轮 totalTokens 阈值 |
-
-内容层**只做弱断言**：模型输出不确定，强断言会变成噪声。
-
-## 三个容易踩的点（都已在代码里处理）
-
-1. **终止判定**（`client.is_terminal_message`）：`stream=="compaction"` 和
-   `stopReason=="tooluse"` **不是**终止，认错会把轮次提前截断。
-2. **每轮全新 sessionKey**：`ChatClient` 会硬拦复用（`SessionKeyReuse`）。
-   复用会让第 N 轮看见第 N-1 轮的上下文，数据静默作废且不报错。
-3. **`idempotencyKey` 事实必填**，不传直接 500；服务端 `runId` 直接取它的值，
-   所以 BenchmarkId 当 idempotencyKey 用，产物关联从源头解决，不需要按时间窗匹配产物。
+1. `stream == "compaction"` 和 `stopReason == "tooluse"` 不是终止，不能提前截断。
+2. 每轮必须使用全新 `sessionKey`；复用会让后续轮次继承上下文，静默污染数据。
+3. `idempotencyKey` 事实必填，服务端 `runId` 直接取它；使用 BenchmarkId 可稳定关联产物。
 
 ## token 的三个来源
 
-一轮的用量同时从三处采，一个来源一条 `UsageSample`，**谁缺就是谁漏记**，不互相顶替：
+| 来源 | 匹配方式 | 覆盖范围 |
+|---|---|---|
+| `session-jsonl` | `idempotencyKey` 精确匹配 | 全部模式，当前最可靠 |
+| `newapi` | 时间窗 | 仅走 NewAPI 的轮次 |
+| `device-api` | 时间窗 + 答案文本 | 全部模式，但实测存在漏记 |
 
-| 来源 | 怎么匹配 | 覆盖范围 | 实测情况 |
-|---|---|---|---|
-| `session-jsonl` | `idempotencyKey`，**精确** | 全部模式 | 最可靠，跑批时就能采到 |
-| `newapi` | 时间窗 | 只有走 NewAPI 的轮次 | 与会话 JSONL 数字完全一致 |
-| `device-api` | 时间窗 + 答案文本 | 全部模式 | **实测在漏记**，见下 |
-
-断言按 `USAGE_SOURCES` 的顺序挑一条用（端上 → 会话 → 后台）。
-
-## 已知缺口
-
-- **端上 `/api/usage/recent-token-history` 在漏记。** 2026-09-20 实测：改过模型配置之后，
-  连续 6 轮完成的对话一条都没进这个端点，而同样这些轮在会话 JSONL 和 NewAPI 后台都有记录。
-  这是产品问题，不是采集问题；正因为如此，端上这一路不能当唯一数据源。
-- **ErrorCalls 只有 NewAPI 后台有**（按 `type==4` 的日志数），而且要事后 `reconcile` 才采得到。
-  会话 JSONL 和端上端点都没有错误计数，所以跑批当时那条断言仍然是「未采集」而不是 0——
-  用 0 冒充等于把「没采到」说成「没出错」。
-- **工具调用名是尽力而为**：`tool_use` 块的字段结构没有逐字段验证过，取不到名字时记 `unknown`。
-- **老批次的 `model_mode`**：`requested_model_label` 是后加的字段，更早的 JSONL 里没有，
-  重放时会回落成 modelId（显示成 `deepseek-flash` 而不是 `newapi`）。
-  给那些文件单独 `--model-mode newapi` 重灌一次即可。
+一个来源一条 `UsageSample`，缺失就是未采集，不用 0 冒充。断言按既定来源顺序选择数据。
 
 ## 测试
 
@@ -104,4 +109,4 @@ python3 -m venv .venv && .venv/bin/pip install -r runner/requirements.txt
 .venv/bin/python -m unittest discover -s runner/tests -t .
 ```
 
-全部离线：SSE 用假响应，跑批用假 client，不需要 YonWork 在跑。
+全部离线，不需要 YonWork 或数据库运行。

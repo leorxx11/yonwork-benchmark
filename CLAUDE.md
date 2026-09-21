@@ -35,9 +35,20 @@ shell 里有 `http_proxy=http://127.0.0.1:7897`，且 `no_proxy` 用的 `127.*` 
 原生 curl/python 直连即可，**不需要 `powershell.exe` interop**。
 （注意：默认的 NAT 模式下不成立，别把这个结论套到别的机器上。`10.70.242.1` 是局域网路由器，不是 Windows 主机。）
 
-**坑 3 —— WSL 环境变量不会传给 Windows 进程**
-调 `node.exe` 等 Windows 程序时必须用 `WSLENV` 声明：
+**坑 3 —— 环境变量传不到目标进程（两个方向都会踩）**
+
+*WSL → Windows*：调 `node.exe` 等 Windows 程序时必须用 `WSLENV` 声明：
 `WSLENV=FOO FOO=bar node.exe ...`，否则 `process.env.FOO` 是 undefined。
+
+*Windows 进程之间*：`setx` 只写注册表，**已在运行的进程不会重读自己的环境块**。
+2026-09-21 实测：设完三个 `YONCLAW_*` 变量后重启 YonWork，绑定地址纹丝不动——
+因为 YonWork 是 **uTools 拉起来的**，而 uTools 那个进程 9:18 就起了、比 setx 还早，
+传给子进程的是那份旧环境。
+**光重启目标应用没用，得先重启启动它的那个进程**（或注销重登）。
+查父进程：
+```bash
+powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='YonWork.exe'\" | Select ProcessId,ParentProcessId,CreationDate"
+```
 
 ---
 
@@ -78,14 +89,16 @@ shell 里有 `http_proxy=http://127.0.0.1:7897`，且 `no_proxy` 用的 `127.*` 
 3. **端口别硬编码**。3211 被占用会回落随机端口。从 `host-api-runtime.json` 读 `port` 和 `token`。
    当前构建 `AUTH_MODE=trusted` 免鉴权，但**请求里照样带 `Authorization: Bearer <token>`**，
    将来切 token 模式脚本不用改。
-4. **每轮必须用全新 `sessionKey`**（如 `agent:main:<benchmarkId>`）。复用会让第 N 轮看见
-   第 N-1 轮的上下文，**基准数据静默作废且不报错**，这是最难查的一类污染。
-   等价于 PAD 里每轮点「新建任务」。
+4. **每轮必须用全新 `sessionKey`，而且要全小写**（`agent:main:<benchmarkid>`）。
+   复用会让第 N 轮看见第 N-1 轮的上下文，**基准数据静默作废且不报错**，
+   这是最难查的一类污染。等价于 PAD 里每轮点「新建任务」。
+   带大写字母则会触发第六节-5 的会话分裂，**界面上看不到完整对话**。
+   `idempotencyKey` / `runId` 不要跟着小写——服务端原样保留，动了会打断用量匹配。
 
-**成本基线**：最小 prompt（`Reply with exactly: PONG`）的 `inputTokens` 实测 **20832**，
-说明每轮约 20k 系统提示词底噪。
-⚠️ 但这是**单次**实测，之后又测到 16,005 / 16,075 / 21,128——波动比阈值本身还大。
-别拿单个常数当阈值，见七-4。
+**成本基线**：**没有单一底噪，别再找这个数。** 最小 prompt 曾实测 20832，
+但同一句「你好！」后来实测到 5,514 ～ 16,238，同一轮换个用量来源还能差 7.6 倍
+（长文本：session-jsonl 30,082 / NewAPI 228,354）。
+阈值一律按 Case 声明 `max_input_tokens`，不声明就只记录不判定，见七-0.2。
 
 **备用通路**（不是主力）：
 - `yonworkctl`（`resources/cli/yonworkctl.mjs`，60+ 子命令）—— 官方 CLI，退出码规范，适合 CI 判定。
@@ -103,10 +116,12 @@ shell 里有 `http_proxy=http://127.0.0.1:7897`，且 `no_proxy` 用的 `127.*` 
 | 路径 | 说明 | 状态 |
 |---|---|---|
 | `runner/` | 驱动 + 五层断言 + 入库，主链路 | 在用 |
-| `web/` | 只读看板，FastAPI + Jinja + HTMX | 在用 |
+| `web/` | 测试控制台 + 报告，FastAPI + Jinja + 本地原生 JS | 在用 |
 | `infra/` | 结果库 MySQL 8.4（:3307），JSONL 可随时重放 | 在用 |
 | `newapi/` | **被测对象**的模型网关（:3000），不是我们的基础设施 | 在用 |
-| `cases/yonwork_benchmark.xlsx` | prompt 清单 | prompt 源保留，结果改 JSONL |
+| `cases/catalog.yaml` | Git 版本化的主用例源，含用例集与断言 | 在用 |
+| `cases/yonwork_benchmark.xlsx` | 旧 prompt 清单和历史结果 | 只作兼容，不再默认读取 |
+| `compose.yml` / `Dockerfile` | MySQL、NewAPI、Web、串行 worker 一键环境 | 在用 |
 | `scripts/newapi_stats.ps1` | 拉 NewAPI 后台用量 | **保留**，见下 |
 | `scripts/extract_asar.py` | 无需 Node 的 asar 解包/grep 工具 | 查源码时还用得到 |
 | `docs/yonwork-automation-report.md` | 完整调查报告（已脱敏） | **权威参考** |
@@ -121,7 +136,7 @@ shell 里有 `http_proxy=http://127.0.0.1:7897`，且 `no_proxy` 用的 `127.*` 
 
 **`benchmark-companion/` 不是遗留**：它服务的是 **WorkBuddy**，不是 YonWork。
 `runner/` 覆盖的是 YonWork 那两个模式，**WorkBuddy 那两个模式目前只有这条人工通路**。
-四个模式里有一半的数据质量和另一半不在一个等级上，这是七-1 排第一的原因。
+四个模式里有一半的数据质量和另一半不在一个等级上，这是七-3.2 要等 WorkBuddy 结论的原因。
 
 **`yonwork_usage/` 先别删**：它读 `llm-observer/*.jsonl`，`runner/sessionlog.py` 读
 `sessions/*.jsonl`，**是两个不同的文件**。取 token 已被覆盖，但 llm-observer 独有
@@ -152,16 +167,18 @@ shell 里有 `http_proxy=http://127.0.0.1:7897`，且 `no_proxy` 用的 `127.*` 
 
 ## 六、已查到的 YonWork 产品缺陷（本职工作产出）
 
-这四条比自动化工具本身更值钱，应走公司内部渠道上报（先确认是否为测试构建有意放宽）。
-前两条是调查阶段查到的，后两条是搭 runner 的过程中撞出来的。
+这五条比自动化工具本身更值钱，应走公司内部渠道上报（先确认是否为测试构建有意放宽）。
+前两条是调查阶段查到的，后三条是搭 runner 和跑批的过程中撞出来的。
 
 1. **高危：本地服务默认对局域网开放且免鉴权。**
    Host API 默认 `BIND=0.0.0.0`、`AUTH_MODE=trusted`（跳过全部 token 校验）；
    CDP TCP 代理默认 `0.0.0.0:9222`（应用日志自己写着「任何机器都可驱动本应用，风险极高」）。
    实测无任何凭据调 `/api/auth-runtime/session/status` 拿到完整登录态
    （accessToken、userId、tenantId、用户名）。叠加后 = 同网段任何人可无凭据调用全部 364 条路由。
-   **本机缓解（不影响自动化，mirrored 模式下 127.0.0.1 照常可用）：**
-   `YONCLAW_HOST_API_BIND=127.0.0.1`、`YONCLAW_HOST_API_AUTH_MODE=token`、`YONCLAW_CDP_PROXY_BIND=127.0.0.1`
+   **本机已于 2026-09-21 缓解**（见七-0.1），实测改完两个 `0.0.0.0` 消失、
+   无 token 调该端点返回 401，而 CDP 和整条自动化链路零改动照常工作：
+   `YONCLAW_HOST_API_BIND=127.0.0.1`、`YONCLAW_HOST_API_AUTH_MODE=token`、`YONCLAW_CDP_PROXY_BIND=127.0.0.1`。
+   **但产品默认值没变，这条缺陷本身依然要上报。**
 2. **`yonworkctl` 路径不匹配，官方 CLI 完全不可用。**
    主进程写 `%APPDATA%\yonwork\host-api-runtime.json`，CLI 读 `%APPDATA%\yonclaw\`，
    导致应用在跑时任何命令都返回「YonWork is not running」+ 退出码 7。
@@ -176,6 +193,16 @@ shell 里有 `http_proxy=http://127.0.0.1:7897`，且 `no_proxy` 用的 `127.*` 
    HTTP 200、答案正常，实际跑的却是智能体默认模型。
    会话日志里有实证（`probe-mode` / `probe-prov` 两轮跑的是 `deepseek-v4-flash`）。
    已加 `model-match` 断言兜底，判 `Invalid`。
+5. **`sessionKey` 大小写不一致，一轮对话被拆成两条会话。**（2026-09-21 实测）
+   `sessionKey` 里带大写字母时，应用会存出两条会话元数据：
+   原样大小写那条只有标题（`displayName`），**没有 `sessionId`、没有对话内容**；
+   全小写那条有 `sessionId` 和完整对话，**但界面里点不到**。
+   症状是「用户消息和 Agent 回答不在一个界面」。
+   统计（`/api/sessions/list-metadata`）：含大写的 key **10 个里 9 个分裂**，
+   全小写的 4 个**一个都没分裂**；改成全小写后新跑的轮次恢复成单条。
+   说明写会话元数据和建会话绑定这两条路径对 key 做了不同的规范化。
+   我们这边已经规避（`session_key_for` 统一小写），但**产品自己应该修**——
+   任何用混合大小写 sessionKey 的调用方都会踩到，而且不报错。
 
 ⚠️ `docs/yonwork-automation-report.md` 的凭据**已于 2026-09-20 脱敏**
 （host-api token / accessToken / gateway token / 用户名 → `<REDACTED:…>`）。
@@ -185,31 +212,274 @@ shell 里有 `http_proxy=http://127.0.0.1:7897`，且 `no_proxy` 用的 `127.*` 
 
 ## 七、待办（按优先级）
 
-§7-2 的 `runner/` 骨架已完工：驱动 + 五层断言 + 三来源用量 + MySQL + 看板全部跑通，
-99 个离线单测。链路命令见根目录 `README.md`。剩下的：
+主链路已完工：驱动 + YAML 用例 + 五层断言 + 三来源用量 + 持久任务队列 + MySQL +
+Web 测试控制台与报告全部接通，runner 113 个、web 6 个离线单测。
+链路命令见根目录 `README.md`。
 
-0. **关掉第六节-1 的两个默认暴露——这条一直没做。**
-   2026-09-20 复查，`netstat` 显示 `0.0.0.0:3211` 和 `0.0.0.0:9222` 仍在 LISTEN（PID 6568）。
-   这台是个人笔记本，接公司 WiFi 时同网段任何人都能无凭据调用全部 364 条路由、
-   或通过 CDP 完全控制应用。**改完不影响自动化**，mirrored 模式下 127.0.0.1 照常可用。
-1. **摸清 WorkBuddy 有没有可编程入口（CLI / HTTP）。** 建议这周花半天。
-   现在 YonWork 两个模式走 `runner/` 全自动，WorkBuddy 两个模式只有
-   `benchmark-companion/` 的人工热键通路。**不确认这件事，「四个模式」的对比就是不对等的**，
-   一半数据带完整断言和三来源用量，另一半只有人工计时。
-   它同时决定 P4 的工作量估算——如果只有 UI，那按八节的规矩这条路直接封死，
-   得改成「只对比 YonWork 两个模式」并把理由写清楚。
-2. **suite runner**：一条命令把所有模式跑完。需要先从 `batch.py` 里抽一层 `Driver` 接口，
-   否则 WorkBuddy 接进来时会把 YonWork 的假设写死。
-3. **跑批时也采 ErrorCalls。** 五节存活的那条断言（`ErrorCalls > 0` → `Fail`；
+下面按**批次**排，同一批内可以任意顺序，跨批有依赖。
+
+### 第 0 批 · 今天就能清掉（合计 < 1 小时）
+
+0.1 ~~关掉第六节-1 的两个默认暴露~~ **已完成 2026-09-21。**
+   （拖了最久的一条：2026-09-20 复查时 `0.0.0.0:3211` 和 `0.0.0.0:9222` 还在 LISTEN，
+   这台是个人笔记本，接公司 WiFi 时同网段任何人都能无凭据调用全部 364 条路由。）
+
+   **改完实测：**
+   ```
+   127.0.0.1:3211   LISTENING   ← 原 0.0.0.0，没了
+   127.0.0.1:9222   LISTENING   ← 原 0.0.0.0 + 127.0.0.1 两条，现在只剩本体
+   无 token  调 /api/auth-runtime/session/status → HTTP 401
+   带 token  调同一端点                          → HTTP 200
+   ```
+   401/200 那一对是关键——说明 `AUTH_MODE=token` 真的在拦，不是摆设。
+   那正是以前无凭据就能拿到完整登录态（accessToken / userId / tenantId / 用户名）的端点。
+   CDP 仍通（`Chrome/144.0.7559.236 Electron/40.9.1`，1 个 renderer target），
+   `--case-set smoke --dry-run` 前置检查照常过，自动化零改动。
+
+   - 设 `YONCLAW_HOST_API_BIND=127.0.0.1`、`YONCLAW_HOST_API_AUTH_MODE=token`、
+     `YONCLAW_CDP_PROXY_BIND=127.0.0.1`，然后重启 YonWork。
+   - **千万别设 `YONCLAW_CDP_ENABLED=0`**，那会直接废掉 0.3 的体验探针。
+   - `0.0.0.0:9222` 是 TCP 代理，`127.0.0.1:9222` 是 Chromium 本体，**两个独立监听**。
+     改绑后代理要么只绑 loopback、要么因端口被本体占用而起不来——两种结果都是
+     「局域网暴露没了，本地 CDP 照常」。
+   - **切 token 模式对我们无影响，已核实**（2026-09-21）：五个调用点
+     `discovery.health_check` / `discovery.session_status` / `catalog.list_model_choices` /
+     `usage` / `client` 全部经 `transport._headers` 带 `Authorization: Bearer`。
+   - ⚠️ **只重启 YonWork 不够**，见坑 3：它是 uTools 拉起来的，
+     uTools 不重启就一直传旧环境。2026-09-21 已在这里栽过一次。
+   - 改完验三条：`netstat` 里两个 `0.0.0.0` 消失且 `127.0.0.1:9222` 还在、
+     `curl --noproxy '*' 127.0.0.1:9222/json/version` 仍通、
+     `python -m runner --case-set smoke --dry-run` 前置检查仍过
+     （第三条是验 `AUTH_MODE=token` 之后鉴权没断）。
+
+   回退：`reg delete "HKCU\Environment" /v <变量名> /f`，三个变量原先都未设置。
+   ⚠️ 这只是**本机缓解**。第六节-1 作为产品缺陷依然成立（默认值仍是 `0.0.0.0` + `trusted`），
+   照常上报。
+
+0.2 ~~重定成本阈值~~ **已完成 2026-09-21。**
+   查库后发现原来的判断错了一半：天花板 `20832 × 2 = 41,664` 对「你好！」**永远不触发**，
+   真正的假阳性在另一头——长文本用例走 NewAPI 那一路 **228,354**，
+   是工具调用反复重放文件的正常开销，却会被判成 Fail。
+
+   实测分布（`usage_samples`）：同一句「你好！」**5,514 ～ 16,238**（3 倍差）；
+   长文本同一轮 session-jsonl 记 **30,082**、NewAPI 记 **228,354**（7.6 倍差）。
+   **一个常数既管不了寒暄也管不了长文本，跨来源比更没有意义。**
+
+   做法：删掉全局常数，阈值改成按 Case 声明 `max_input_tokens`
+   （YAML 和旧 Excel 的 `MaxInputTokens` 列都支持）；没声明就只记录实测值和来源，
+   **不判定、不猜**。断言名从 `input-token-jump` 改成 `input-tokens`。
+   记录下来的值就是将来定分位数基线的原料——现在样本太少（每个 Case 个位数），
+   **先攒数据再定阈值**，别急着填一个拍脑袋的数。
+
+### 第 1 批 · POC 之前必须先回答的那个问题（半天）
+
+1.1 **Spike：能不能让 UI 渲染一轮由 Host API 发起的对话。**
+   **2026-09-21 已查。结论：能，POC 路线成立，但还差「每轮换新会话」这一块拼图。**
+
+   **关键实测——UI 会实时渲染 API 发起的轮次，前提是那一轮发给「UI 当前打开的会话」。**
+   往 `agent:main:main`（UI 首页那个会话）发一轮，CDP 侧看到完整的流式过程：
+   ```
+    0.00s  len=313   空白首页
+    8.64s  len=253   "等待结果返回"                 ← loading 出现
+   10.66s  len=281   "命令执行中…已等待 00:01"
+   11.92s  len=254   "我是"                         ← 首段文本，流式
+   12.38s  len=398   完整回答                       ← 最后一次变化
+   ```
+   同轮 Host API 侧 `first_delta=9.427s / duration=10.377s`（观察器早起 2.0s）：
+
+   | 指标 | UI | Host API | Client Overhead |
+   |---|---|---|---|
+   | 首字 | ~9.92s | 9.427s | **~0.5s** |
+   | 完成 | ~10.38s | 10.377s | ~0 |
+
+   **POC 想要的那个指标，第一次测就出来了**（0.4s 轮询精度很粗，
+   真正的 MutationObserver + `performance.now()` 会准得多）。
+
+   **反过来，发给 UI 没打开的会话就完全不渲染**：UI 停在会话 A 时往新会话 B 发一轮，
+   DOM 只有 665 → 662 → 620 的相对时间戳抖动，新消息始终没出现。
+
+   **查完的死路（别再走一遍）：**
+   - Host API **没有**任何「切换当前会话」的路由。
+     `/api/chat/*`、`/api/sessions/*` 全量列过，只有 query / pin / rename /
+     upsert-metadata / delete / compact 这些，没有 activate / select / switch。
+   - `/api/sessions/bootstrap-local` 名字像创建，其实是个 **GET 列表**接口。
+   - renderer **没有** `/chat/:sessionKey` 路由，会话靠 React state 选，改 hash 没用。
+   - `/api/webview-agent/dispatch` 是真的动作分发入口，动作名
+     `agent:webview:new-session`（返回新 sessionKey）和 `agent:webview:open-chat` 都在，
+     **但它服务的是内嵌 webview，不是主聊天界面**：无绑定时返回
+     `webview target not found for current session`。值得再看一眼
+     `/api/webview-agent/virtual-binding` 能不能造一个绑定。
+
+   **候选也查完了（2026-09-21），自动开新会话这条路走不通：**
+   - **没有 IPC 能新建会话。** 主进程 179 个 `ipcMain.handle` 通道全量列过，
+     会话相关的只有 `session:delete`、`workspaceSession:{registerActive,listActive,deleteActive}`。
+     「新建任务」是**纯 renderer 内部的状态切换**（`navigate("/", {state:{createNewSession:true}})`，
+     React Router state，外部注入不了），会话是首次发消息时才惰性创建的。
+   - **webview-agent dispatch 够不到主界面。** 试了 `agent:main:main` / `agent:main` / `main`
+     三个 sessionKey，一律 `webview target not found for current session`。
+     那套 `agent:webview:*` 动作只服务内嵌浏览器；`virtual-binding` 的日志写着
+     "virtual binding upserted **from remote browser**"，也是给外部浏览器注册用的。
+   - **⚠️ `agent:main:main` 会累积上下文，不是每次都空。** 实测我们那轮落在
+     `98d96aca-….jsonl`，文件里前面已经有一对 user/assistant——
+     也就是上面那个 9.427s 的测量**是带着前文跑的**。反复往它发就是 CLAUDE.md 三-4 说的污染。
+
+   **唯一没试的自动路径**：`/api/sessions/delete` 删掉当前会话，看 UI 会不会重开一个空的。
+   有破坏性（会删用户的对话），试之前先确认。
+
+   **结论：走半自动——每轮人工点一次「新建任务」，再由 API 发这一轮。**
+   这不是退而求其次，而是**本来就该这么划范围**：
+   Client Overhead 是**客户端的属性，不是 prompt 的属性**，
+   量几轮就够，不需要跟基准跑批逐轮对齐。
+   每轮隔离那条铁律是为了保证**模型/Agent 指标**干净，测 UI 渲染延迟不需要它。
+   所以体验探针应当是**独立的小规模测量**，不要塞进主跑批链路。
+
+   ⚠️ 附带的方法论坑：**在共享会话上测 UI 延迟会被上下文增长污染**——
+   上下文越长首字越慢，测出来的"客户端开销"里混着模型变慢。
+   共享会话连续测多轮的数字不可比，必须每轮新会话。
+
+   ⚠️ POC 页里 T0 定义成「触发发送」，那是 UI 发起才有的时间点。
+   走 API 发起要把 T0 重定义成 HTTP 请求发出时刻，时间点表跟着改。
+
+### 第 2 批 · 客户端体验探针（独立实验，不进主跑批）
+
+设计与评审见 Notion「YonWork 客户端体验探针：CDP 渲染监测 POC」及其「9.21 评审补充」。
+**定位：Core Benchmark 管 Agent/API 层，这条管「用户什么时候看到什么」，两者不合并。**
+
+已替它验过（2026-09-21）：CDP 通，`Chrome/144.0.7559.236 Electron/40.9.1`，1 个 renderer target。
+POC 清单前三项可划掉。API 侧的被减数现成：`first_delta_ms` 已在 `runs` 表里。
+
+**两条贯穿全程的铁律，写在最前面因为它们会悄悄毁掉数据：**
+
+- **时钟：绝不跨端相减。** 实测 Windows 比 WSL 快 **7.85s**（renderer 用 Windows 时钟，
+  Python 探针用 WSL 时钟）。被测量级 0.5～3s，误差比它大一个量级且符号固定。
+  T0 一律在 **renderer 内**打点，T0–T5 全在同一时钟；Host API 侧只取**时长**
+  （`first_delta_seconds` / `duration_seconds`，与时钟无关）加到同一个 T0 上。
+- **UI 驱动范围：只允许点「新建任务」一个按钮。** 不打字、不碰剪贴板、不选模型，
+  prompt 一律由 Host API 投递。「少量驱动 UI」不写死范围，就是当年 PAD 的起点。
+
+2.1 **选择器勘探**（要 YonWork 在跑 + 手动发一条消息）。
+   找用户消息节点、assistant 节点、loading 节点、Stop/Send 按钮的**稳定锚点**。
+   优先 `data-*` / ARIA role / 语义标签，**不要用 classname**（React 打包后全是哈希）。
+   ⚠️ Stop→Send 在输入框区域，**很可能不在 chatRoot 子树内**，要同时观察两处。
+
+2.2 **`probe_renderer.py`**：MutationObserver + `performance.now()` + `requestAnimationFrame`
+   + `Runtime.addBinding` 事件驱动，采 T1–T4。
+   T3 叫 `first_content_dom` 不叫 `first_paint`、首字后补一帧取 `first_visible_frame`——
+   这两个命名判断是对的，别改。
+
+2.3 **T5 完成事件**。别用「N 毫秒没有文本变化」——实测 DOM 序列
+   `253 → 281 → 253 → 254 → 398`，中途从「命令执行中…已等待 00:01」**退回**「等待结果返回」，
+   短静默窗口会在这里误判完成。
+   先找确定性标记（loading 消失 / Stop→Send / running 属性）；
+   **找不到也不阻塞**：用 Host API 的 SSE 终止事件当「后端已完成」的基准真值，
+   T5 定义成「后端完成之后 UI 的最后一次变化」，指标依然良定义，
+   而且「UI 完成滞后」正好就是要测的量。
+
+2.4 **串起来**：人工点「新建任务」→ 探针在 renderer 内打 T0 → Host API 发这一轮 →
+   收 binding 事件 → 落 JSONL。**字段形状现在就对齐 `results.jsonl`**（`benchmark_id` 等），
+   将来想入库直接复用 `ingest.py`，零返工。**暂不接 MySQL / Dashboard。**
+
+2.5 **场景集 S1–S7**（短文本 / 5k Markdown / 20k Markdown / 大表格+代码块 /
+   多轮工具调用 / 工具+产物面板 / 长历史会话）。两个会毁掉可比性的点：
+   - **输出长度必须受控**——测的是「渲染 X 字节的成本」，X 每轮不一样就没法比。
+     用确定性指令（原样重复 N 遍 / 恰好 N 行表格），每轮记录实际字符数，按 `ms/1k 字` 归一化。
+   - **流式分片节奏和总长度同样重要**——同样 5k 字分 50 片和 500 片，
+     DOM 更新次数差 10 倍。把 `text-update` 计数一并记录。
+   2.3MB 文件那个场景压的是 Agent/文件处理，长 Markdown 才压 renderer，**分开看**。
+
+2.6 **每场景 3～5 轮，看差值是否随复杂度放大。**
+   `backend → visible` 是差值，后端波动大部分抵消，3～5 轮够用；
+   但 **Long Task 计数、Streaming duration 是绝对量**，不抵消——
+   本项目实测同一句「你好！」inputTokens 在 5,514～16,238 之间跳。
+   **报中位数 + 最小/最大，不报均值**；跨度超过关心的效应量就标「样本不足」。
+   **判定阈值跑之前写死**，例如「S1–S7 的 backend→visible 全部 < 1s
+   且 Long Task 最大 < 200ms ⇒ 判定 renderer 不是瓶颈」——
+   不预先定标准，拿到数据会不自觉往「看起来还行」上圆。
+   ⚠️ **「排除客户端瓶颈」本身就是合格产出**，不要求一定发现问题。
+
+**2026-09-21 进展：探针已跑通，2.1–2.3 完成。** `runner/client_probe/` 三个文件，
+事件驱动（MutationObserver + `Runtime.addBinding`），两种模式：
+
+- `probe_once()`——API 发起，有后端时长做被减数，能算客户端开销
+- `watch_once()`——**人工在界面发送，探针只观察**，给纯用户视角时间线
+
+实测（手动发送，1036 字回答，相对 T1 = 消息进 DOM）：
+
+```
+T2 出现「等待结果返回」    0.1 ms   ← 几乎瞬时，不存在「点了没反应」
+T3 首次看到回答文字      843 ms   ← 用户最在意的数
+T3' 首帧上屏 (rAF)       844 ms   ← 只比 T3 晚 1.4ms
+T5 生成完成            11679 ms   流式更新 28 次
+```
+
+`first_content_dom` / `first_visible_frame` 分开命名是对的，**实测这一层只有 1.4ms**。
+
+**选择器速查**（版本 1.0.8，客户端升版后要重校）：
+
+| 用途 | 锚点 |
+|---|---|
+| 观察挂载点 | `.yonclaw-main-stage`（首页和会话页都在） |
+| 会话根 | `.yonclaw-chat-scroll-region`（**首页还不存在**） |
+| 消息列表 | `.yonclaw-chat-max-width`，直接子元素 = 一条 turn |
+| T5 完成信号 | 气泡里「正在生成」**消失** |
+| 新建任务按钮 | `.yonclaw-sidebar-new-task` / `[aria-label="新建任务"]` |
+
+⚠️ **别用 `.prose` 当内容锚点。** 实测流式过程中它恒定 48 字不动，
+整个气泡从 98 涨到 2284，**结束时才把全文灌进 `.prose`**——
+盯它测出来的是「整块渲染完成」，不是「首次可见」。要取整个气泡的文本。
+
+**踩过的四个坑，全是「静默假数据」型**（数字看着正常，只有符号或零值能暴露）：
+
+| 坑 | 症状 | 根因 |
+|---|---|---|
+| 抓到历史气泡 | 滞后 −1794ms | 没排除会话里已有的轮次 |
+| 抓到用户气泡 | 滞后 −1189ms | 用户消息先出现，被当成「首段内容」 |
+| 占位文案残渣 | 滞后 −1962ms | 按子串剥离，「已等待 00:01」剩下残字被当内容 |
+| 基线用索引 | 零事件 | 换个会话就废：列表只剩 2 条而基线是 26 |
+
+**规律：只要锚点依赖位置或索引，状态一变就会悄悄失效。**
+选择器和基线都要靠身份（元素本身 / 语义类），不能靠位置。
+「滞后为负 = 物理不可能」这条自检抓出了前三个，**必须保留**。
+
+**watch 模式的固有边界**：那一轮不经过我们的 SSE 客户端，所以**拿不到后端时长**，
+算不了客户端开销；它给的是用户视角的绝对时间线。两种模式各有各的用途，别混。
+另外按下发送键到气泡进 DOM 那一小段（Submit latency）**采不到**——
+MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟，不值得为它越界去 hook 输入框。
+
+### 第 3 批 · 主链路欠的账
+
+3.1 **跑批时也采 ErrorCalls（原 §7-3）。** 五节存活的那条断言（`ErrorCalls > 0` → `Fail`；
    `APICalls == 0` → `Invalid`）目前只有事后 `reconcile` 拉 NewAPI 才有数，
    跑批当时记的是「未采集」。**别用 0 冒充**——那等于把「没采到」说成「没出错」。
-4. **成本阈值要重定。** 三-末那个 20832 底噪是单次实测，之后实测到
-   16,005 / 16,075 / 21,128，波动比阈值本身还大，`input-token-jump` 会误报。
-   要么按模式分别定基线，要么改成同模式历史分位数。
-5. **device-api 和 newapi 两路改成按 runId 匹配**（现在是时间窗）。
-   串行跑批没问题，**并发跑批前必须先解决**，否则会张冠李戴。
-   会话 JSONL 那路走 `idempotencyKey`，不受影响。
-6. **上报第六节的四条产品缺陷**，走公司内部渠道，先确认是否为测试构建有意放宽。
+
+3.2 **抽 `Driver` 接口 + 跨模式实验编排（原 §7-2）。**
+   **WorkBuddy 报告已回**（`docs/workbuddy-probe-report.md`，提示词在 `workbuddy-probe-prompt.md`）。
+   **结论：能无人值守跑批，「四个模式」的对等性问题解了。**
+   - 主路线是**内置 headless CLI**（`-p --output-format json`），一轮对话能拿到
+     答案 + input/output token + 请求模型 + **实际模型** + 内外耗时。
+   - 桌面那三个 loopback 端口（11983 / 11986 / 18488）**都不是聊天 API**，别再去试。
+   - `codebuddy --serve` 的 REST/ACP 能跑通对话，但**不返回 token / 实际模型 / 单轮耗时**，
+     且有订阅竞态，只能作备选，不能当计量主路线。
+   - 建议契约：**一个 case = 一个新进程 + 全新 session id + `--no-session-persistence`**，
+     不要用 `--continue` / `--resume`，不要复用 session id。
+   
+   所以现在可以抽 `Driver` 了：YonWork 走 Host API + SSE，WorkBuddy 走一次性进程 + JSON，
+   两种形状都在手上，接口不会再按单一实现写死。
+
+### 明确往后放的（写下来是为了不再反复捡起）
+
+- **device-api / newapi 改按 runId 匹配（原 §7-5）**：worker 已被 MySQL 咨询锁
+  **强制串行**，串行下时间窗匹配是对的，不构成当前风险。真要并发再做。
+- **`infra/schema.sql` 与 `job_store.py` 的双份表定义**：已验证逐字段一致。
+  重复是必要的（schema.sql 只在数据目录为空时执行一次），加个交叉引用注释即可。
+- **清理那 9 条分裂会话**：留着当第六节-5 的上报证据，比清掉有用。
+
+### 随时可做、不占开发时间
+
+- **上报第六节的五条产品缺陷**，走公司内部渠道，先确认是否为测试构建有意放宽。
+  第 5 条（sessionKey 大小写）有完整复现数据，最好上报。
+  它和 1.1 那个「API 发起的轮次界面不渲染」很可能是**同一处规范化不一致的两个表现**，
+  上报时一起说。
 
 ## 八、不要做的事
 

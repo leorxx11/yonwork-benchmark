@@ -1,24 +1,38 @@
-# cases —— 提示词清单
+# cases —— 版本化测试用例
 
-跑批的输入源。`runner` 只读不写：结果落 JSONL，不再往表里回写。
+`catalog.yaml` 是主用例源。它是普通文本，能正常做 Git diff、评审、分支合并和版本回退，
+也不会像二进制 Excel 那样依赖某台机器上的编辑器。
 
-```
-yonwork_benchmark.xlsx
-  ├─ Cases       ← 主用例表，runner 默认读这张
-  ├─ long-text   ← 长文本用例，单独一张表（--sheet long-text）
-  └─ Results     ← PAD 时代的结果回写表，**已停用**，留着只为看历史数据
+```text
+catalog.yaml
+  case_sets:
+    smoke       # 快速验证链路
+    long-text   # 文件读取和长上下文
+
 fixtures/
-  └─ 西游记[lunarora.com].txt   ← long-text 用例要 YonWork 去读的那个文件（2.3 MB）
+  西游记[lunarora.com].txt
+
+yonwork_benchmark.xlsx
+  旧数据和 CLI 兼容输入，不再是默认来源
 ```
 
-表结构和可选的断言参数列见 `runner/README.md`。
+完整字段说明见 [runner/README.md](../runner/README.md)。新增用例时直接编辑 `catalog.yaml`；
+未知字段、重复名称、非法 runs 或断言类型会在提交任务前报错。
 
-## 两个已知的坑
+## 本机路径
 
-1. **`long-text` 表里的路径是旧机器的**，写死成
-   `C:\Users\Administrator\Desktop\benchmark\doc\西游记[lunarora.com].txt`。
-   现在文件在 `cases/fixtures/` 下，而且开发机已经换成 WSL 了。
-   这条用例**当前跑不通**——改之前得先确认 YonWork 的文件工具认不认
-   `\\wsl.localhost\...` 这种 UNC 路径，认不认再决定是改提示词还是把 fixture 拷到 Windows 侧。
-2. **`Results` 表不要再当结果来源。** 里面是 2026-09-11 前后 PAD 跑出来的数据，
-   口径和现在不一样（那会儿还没有失败分类、没有断言）。新数据在 MySQL 和 `results/*.jsonl` 里。
+YonWork 是 Windows 进程，因此文件类 prompt 不能直接引用容器内或 WSL 内路径。catalog 使用：
+
+```yaml
+prompt: 请读取 ${YONWORK_XIYOUJI_PATH} 并完成摘要。
+```
+
+`scripts/bootstrap.sh` 会把 fixture 复制到 Windows Documents，并把该 Windows 路径写入 `.env`。
+直接运行 CLI 时，需要自行设置同名环境变量。若变量缺失，runner 会明确报错，不会把占位符原样
+发给模型。
+
+## 结果放在哪里
+
+runner 只读用例，不向 catalog 或 Excel 回写。逐轮事实来源是 `results/*/results.jsonl`，汇总结果
+在 SQLite、XLSX 和 MySQL 中。旧工作簿的 `Results` 页仅用于查看 PAD 时代历史数据，不能与当前
+口径混用。

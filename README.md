@@ -1,72 +1,95 @@
 # YonWork 基准测试工具链
 
-批量跑 prompt → 采耗时/token/成本 → 按五层断言自动判定 → 看板对比。
-全程纯 Python + HTTP，不碰界面。
+在浏览器里选择用例集和模型，一键提交测试；后台 worker 调用 Windows 上已经安装并启动的
+YonWork，逐轮保存结果、采集用量、执行五层断言，最后在同一个前端查看报告。
 
-背景、环境坑、架构决策和待办在 **[CLAUDE.md](CLAUDE.md)**，那是跨机器的对齐文档，先读它。
+背景、环境坑、架构决策和待办见 [CLAUDE.md](CLAUDE.md)。本轮基础设施与前端集成的完整改动
+记录见 [docs/implementation-summary.md](docs/implementation-summary.md)。
 
-## 一条命令看懂链路
+## 换机后一键启动
+
+适用环境：Windows + WSL2 mirrored 网络、WSL 内原生 Docker、Windows 侧已安装 YonWork。
+先启动并登录一次 YonWork，然后在 WSL 中执行：
 
 ```bash
-# 0. 起依赖（各起一次就行）
-cd infra  && docker compose up -d   # 结果库 MySQL:3307
-cd newapi && docker compose up -d   # 被测的模型网关 :3000
-
-# 1. 跑批 —— 一个模式一个批次
-.venv/bin/python -m runner --workbook cases/yonwork_benchmark.xlsx                 # yonwork / 默认模型
-.venv/bin/python -m runner --workbook cases/yonwork_benchmark.xlsx --model newapi  # yonwork / newapi
-
-# 2. 入库 —— JSONL 是事实来源，库随时可 --rebuild 重放
-.venv/bin/python -m runner.ingest --results results --suite "我的实验"
-
-# 3. 补采历史批次的用量（新批次在跑批时就采了）
-.venv/bin/python -m runner.reconcile --suite <suite_id>
-
-# 4. 看板
-.venv/bin/python -m uvicorn web.api:app --host 127.0.0.1 --port 8000 --reload
+./scripts/bootstrap.sh
 ```
+
+脚本会自动完成以下工作：
+
+- 探测 `%APPDATA%/yonwork` 并挂载运行时文件和会话日志；
+- 将长文本 fixture 复制到 Windows Documents；
+- 生成本机专用且不入库的 `.env`；已有旧版 `infra/.env` / NewAPI token 会自动继承；
+- 构建并启动 MySQL、NewAPI、Web 和串行 worker；
+- 初始化结果表、任务队列表，并等待服务健康。
+
+打开 <http://127.0.0.1:8000/jobs/new>，选择用例集和模型即可开测。YonWork 必须保持运行并已登录；
+它是 Windows 应用，不放进容器。当前容器通过 host 网络访问 Windows loopback，这依赖 WSL
+mirrored 网络和原生 Docker；普通 WSL NAT 或 Docker Desktop 需要另行配置宿主机地址。
+
+NewAPI 第一次启动仍需在 <http://127.0.0.1:3000> 完成管理员初始化。若要测试 NewAPI 模型，
+再把后台 token 和模型映射写进 `.env`；默认 YonWork 模型不需要这一步。
+
+常用命令：
+
+```bash
+docker compose ps
+docker compose logs -f web worker
+docker compose restart web worker
+docker compose down                  # 保留 infra/data 与 newapi/data
+docker compose up -d --build
+```
+
+## 用例不再依赖 Excel
+
+`cases/catalog.yaml` 是唯一主用例源，适合 Git diff、代码审查和合并冲突处理。它描述命名用例集、
+执行次数、开关和断言；机器相关的 Windows 路径使用 `${环境变量}` 占位，由 `.env` 注入。
+
+数据库只保存任务状态和测试结果，不保存用例定义：这样历史任务会记录所用 catalog/case-set，
+而当前用例仍由 Git 版本管理。`yonwork_benchmark.xlsx` 仅保留作历史文件和 CLI 兼容入口，
+前端及默认 CLI 都不再读取它。
+
+```bash
+# 默认 YAML 用例集，前置检查 + 展开，不发请求
+.venv/bin/python -m runner --case-set smoke --dry-run
+
+# Excel 兼容模式
+.venv/bin/python -m runner --workbook cases/yonwork_benchmark.xlsx --sheet Cases --dry-run
+```
+
+## 前端工作流
+
+1. `/jobs/new` 选择 YAML 用例集、模型和实验名称并提交。
+2. worker 从持久化队列取任务；刷新或重启 Web 不会丢任务。
+3. `/jobs/{id}` 实时显示进度、事件和本轮结果，可请求停止。
+4. 完成后自动生成 JSONL、SQLite、XLSX，入库并跳转到报告。
+
+停止是协作式的：正在进行的一轮会先收尾，再阻止下一轮开始。worker 意外中断后，残留的
+`Running` 任务会标记为失败，避免永远显示运行中。
 
 ## 目录
 
-| 目录 | 是什么 | 状态 |
-|---|---|---|
-| `runner/` | 驱动 + 五层断言 + 入库。**主链路** | 在用 |
-| `web/` | 只读看板（FastAPI + Jinja + HTMX，无构建链） | 在用 |
-| `infra/` | 结果库：MySQL 8.4 + 表结构 | 在用 |
-| `newapi/` | **被测对象**的模型网关，不是我们的基础设施 | 在用 |
-| `cases/` | 提示词清单 + 长文本 fixture | 在用 |
-| `scripts/` | 装环境、拉后台用量、解包 asar | 在用 |
-| `docs/` | `yonwork-automation-report.md`，**权威参考**（已脱敏） | 在用 |
-| `results/` | 跑批产物，一个批次一个目录。不进版本库 | 产物 |
-| `benchmark-companion/` | **WorkBuddy** 的人工跑批 GUI（PySide + SQLite + PyInstaller） | 保留，见下 |
-| `yonwork_usage/` | 解析 `llm-observer` JSONL 取 token 的单文件 CLI | **待定，见下** |
-| `archive/` | 废弃的 PAD 流程和探测脚本，只作历史记录 | 不维护 |
+| 目录/文件 | 职责 |
+|---|---|
+| `runner/` | YonWork 驱动、YAML catalog、五层断言、任务 worker、结果入库 |
+| `web/` | 测试控制台与报告（FastAPI + Jinja，本地 JS，无前端构建链） |
+| `cases/catalog.yaml` | Git 管理的主用例源 |
+| `infra/` | MySQL 8.4 表结构和持久化数据 |
+| `newapi/` | 被测模型网关及其持久化数据 |
+| `compose.yml` | 一键环境：MySQL、NewAPI、Web、worker |
+| `results/` | 每批 JSONL/SQLite/XLSX/SSE 产物，不进版本库 |
+| `benchmark-companion/` | WorkBuddy 暂无 API 时使用的人工跑批 GUI |
+| `docs/` | YonWork 自动化调查报告与本轮实现总结 |
+| `archive/` | 已废弃的 PAD 流程和历史探测脚本，不维护 |
 
-## benchmark-companion 为什么不能算「旧东西」
-
-容易误会成 PAD 时代的遗留，其实不是：**它服务的是 WorkBuddy，不是 YonWork**。
-复制提示词 → 人工粘到 WorkBuddy 发送 → `F8` 开始计时 / `F9` 结束 / `F10` 异常 → 落 SQLite 再同步 Excel。
-
-也就是说，`runner/` 覆盖的是 YonWork 那两个模式，**WorkBuddy 那两个模式目前只有这条人工通路**。
-「四个模式」里有一半的数据质量和另一半不在一个等级上——这正是待办里
-「摸 WorkBuddy 有没有可编程入口」排在前面的原因（CLAUDE.md 七）。
-
-已知问题：`config.json` 里的路径还是旧机器的（`C:\Users\Administrator\Desktop\benchmark\`），
-**在这台机器上开箱即坏**。代码里的默认值已经改成仓库相对路径，但 `config.json` 会覆盖默认值，
-要用先改它。
-
-## yonwork_usage 的「待定」是什么意思
-
-它读的是 `llm-observer/*.jsonl`，而 `runner/sessionlog.py` 读的是 `sessions/*.jsonl`，
-**是两个不同的文件**。取 token 这件事已经被 sessionlog 覆盖了，
-但 llm-observer 还独有一个 `tokenAmplification`（累计 token / 最后一轮 token，实测 7.78×），
-那是「一轮对话内部究竟重放了多少上下文」的直接指标，sessionlog 给不出来。
-真要删，先把这个指标搬进 runner。
-
-## 测试
+## 本地开发与测试
 
 ```bash
+python3 -m venv .venv
+.venv/bin/pip install -r runner/requirements.txt
 .venv/bin/python -m unittest discover -s runner/tests -t .
+.venv/bin/python -m unittest discover -s web/tests -t .
+.venv/bin/python -m uvicorn web.api:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-全部离线：SSE 用假响应，跑批用假 client，不需要 YonWork 在跑，也不需要数据库。
+测试全部离线：SSE、客户端和数据库均使用替身，不要求 YonWork 或 Docker 正在运行。
