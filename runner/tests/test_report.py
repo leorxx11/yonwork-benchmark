@@ -4,6 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -79,7 +80,7 @@ class ReportTests(unittest.TestCase):
         database = self.out_dir / "results.db"
         self.assertEqual(2, build_database(self.jsonl, database))
 
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute("SELECT * FROM runs ORDER BY position").fetchall()
             checks = connection.execute("SELECT COUNT(*) FROM checks").fetchone()[0]
@@ -101,7 +102,7 @@ class ReportTests(unittest.TestCase):
         append_jsonl(self.jsonl, make_record(1, Verdict.PASS))
         database = self.out_dir / "results.db"
         build_database(self.jsonl, database)
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             verdicts = [row[0] for row in connection.execute("SELECT verdict FROM runs")]
         self.assertEqual(["Pass"], verdicts)
 

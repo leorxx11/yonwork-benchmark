@@ -46,7 +46,12 @@ class DatabaseConfig:
 
     @classmethod
     def load(cls) -> "DatabaseConfig":
-        values = {**load_env_file(), **os.environ}
+        # 新版统一 Compose 使用根目录 .env；infra/.env 继续兼容旧的拆分部署。
+        values = {
+            **load_env_file(project_root() / ENV_FILE),
+            **load_env_file(project_root() / ".env"),
+            **os.environ,
+        }
         try:
             port = int(values.get("BENCH_DB_PORT", 3307))
         except (TypeError, ValueError) as exc:
@@ -54,7 +59,8 @@ class DatabaseConfig:
         password = values.get("BENCH_DB_PASSWORD") or values.get("MYSQL_PASSWORD", "")
         if not password:
             raise DatabaseError(
-                f"没有数据库密码：确认 {ENV_FILE} 存在，或设 BENCH_DB_PASSWORD 环境变量"
+                f"没有数据库密码：确认 .env 或 {ENV_FILE} 存在，"
+                "或设 BENCH_DB_PASSWORD 环境变量"
             )
         return cls(
             host=values.get("BENCH_DB_HOST", "127.0.0.1"),
@@ -65,11 +71,18 @@ class DatabaseConfig:
         )
 
 
-@contextmanager
-def connect(config: DatabaseConfig | None = None) -> Iterator[pymysql.connections.Connection]:
+def open_connection(
+    config: DatabaseConfig | None = None,
+) -> pymysql.connections.Connection:
+    """建一条裸连接，调用方自己负责提交和关闭。
+
+    多数地方该用 `connect()`。只有需要跨多条语句持有会话状态的场景
+    （比如 Worker 的 GET_LOCK 咨询锁）才直接用这个——那种锁绑在会话上，
+    连接一关就没了。
+    """
     settings = config or DatabaseConfig.load()
     try:
-        connection = pymysql.connect(
+        return pymysql.connect(
             host=settings.host,
             port=settings.port,
             user=settings.user,
@@ -82,8 +95,13 @@ def connect(config: DatabaseConfig | None = None) -> Iterator[pymysql.connection
     except pymysql.MySQLError as exc:
         raise DatabaseError(
             f"连不上 {settings.host}:{settings.port}/{settings.database}："
-            f"{exc}（容器起来了吗：cd infra && docker compose ps）"
+            f"{exc}（容器起来了吗：docker compose ps）"
         ) from exc
+
+
+@contextmanager
+def connect(config: DatabaseConfig | None = None) -> Iterator[pymysql.connections.Connection]:
+    connection = open_connection(config)
     try:
         yield connection
         connection.commit()

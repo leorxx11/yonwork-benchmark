@@ -11,6 +11,7 @@ from runner.discovery import (
     DiscoveryError,
     ENV_BASE_URL,
     ENV_RUNTIME_FILE,
+    ENV_RUNTIME_HOST,
     ENV_TOKEN,
     discover,
     load_runtime_file,
@@ -43,6 +44,20 @@ class RuntimeFileTests(unittest.TestCase):
             os.environ.pop(ENV_BASE_URL, None)
             endpoint = discover()
         self.assertNotIn("secret-token", repr(endpoint))
+
+    def test_runtime_host_can_be_overridden_for_container_networking(self) -> None:
+        path = self._runtime_file({"port": 4123, "token": "abc"})
+        with mock.patch.dict(
+            os.environ,
+            {
+                ENV_RUNTIME_FILE: str(path),
+                ENV_RUNTIME_HOST: "host.docker.internal",
+            },
+            clear=False,
+        ):
+            os.environ.pop(ENV_BASE_URL, None)
+            endpoint = discover()
+        self.assertEqual("http://host.docker.internal:4123", endpoint.base_url)
 
     def test_rejects_missing_token(self) -> None:
         path = self._runtime_file({"port": 3211})

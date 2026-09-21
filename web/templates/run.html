@@ -80,8 +80,8 @@
 <div class="panel"><pre class="answer">{{ run.answer_preview or '（没有答案文本）' }}</pre></div>
 
 <h2>SSE 原始流</h2>
-<button class="ghost" hx-get="/run/{{ run.benchmark_id }}/transcript"
-        hx-target="#transcript" hx-swap="innerHTML" hx-disabled-elt="this">
+<button class="ghost" data-load-url="/run/{{ run.benchmark_id }}/transcript"
+        data-target="#transcript">
   展开（用来复盘终止判定）
 </button>
 <div id="transcript" style="margin-top:12px"></div>

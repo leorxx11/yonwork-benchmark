@@ -55,6 +55,8 @@ header.top {
 }
 header.top h1 { margin: 0; font-size: 17px; font-weight: 600; }
 header.top .crumb { margin-top: 4px; font-size: 13px; color: var(--text-secondary); }
+.topline { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.topline nav { display: flex; gap: 16px; font-size: 13px; }
 
 main { padding: 24px 28px 64px; max-width: 1200px; }
 
@@ -178,3 +180,75 @@ button.ghost {
   cursor: pointer;
 }
 button.ghost:hover { background: var(--plane); }
+
+/* ---- 测试控制台 ---- */
+.page-actions { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.page-actions h2 { margin-bottom: 4px; }
+.button, button.primary, button.danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  background: var(--surface-1);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.button.primary, button.primary { background: #1668dc; border-color: #1668dc; color: white; }
+button.danger { border-color: var(--v-fail); color: var(--v-fail); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+.actions form { margin: 0; }
+
+.runtime, .notice { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin: 12px 0 18px; }
+.runtime { display: flex; gap: 12px; align-items: baseline; background: var(--surface-1); }
+.runtime.ready { border-left: 4px solid var(--v-pass); }
+.runtime.not-ready, .notice.error { border-left: 4px solid var(--v-fail); }
+.runtime span { color: var(--text-secondary); font-size: 13px; }
+/* 轮询失败提示。颜色不单独传意，文案本身已经写明失败次数和是否还在重试。 */
+.poll-notice { font-size: 13px; }
+.poll-notice[hidden] { display: none; }
+
+.job-form { max-width: 760px; display: grid; gap: 16px; }
+.job-form label:not(.check) { display: grid; gap: 5px; }
+.job-form label > span { font-size: 13px; font-weight: 600; }
+.job-form input, .job-form select {
+  width: 100%;
+  border: 1px solid var(--axis);
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: var(--surface-1);
+  color: inherit;
+  font: inherit;
+}
+.job-form small, .case-set-list small { display: block; color: var(--text-muted); font-size: 12px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.check { font-size: 13px; }
+.check input { width: auto; margin-right: 6px; }
+.case-set-list { padding: 10px 12px; border-left: 2px solid var(--axis); color: var(--text-secondary); font-size: 13px; }
+.case-set-list > div + div { margin-top: 8px; }
+
+.job-state { display: inline-flex; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--v-none); }
+.job-state.s-Running { background: var(--v-timeout); color: #0b0b0b; }
+.job-state.s-Completed { background: var(--v-pass); color: white; }
+.job-state.s-Failed { background: var(--v-fail); color: white; }
+.job-state.s-Cancelled { background: var(--v-invalid); color: white; }
+.progress { height: 8px; background: var(--v-none); border-radius: 999px; overflow: hidden; margin: 14px 0; }
+.progress span { display: block; height: 100%; background: var(--v-pass); }
+.event-log { border: 1px solid var(--border); border-radius: 8px; background: var(--surface-1); max-height: 420px; overflow: auto; }
+.event { display: grid; grid-template-columns: 170px 1fr; gap: 12px; padding: 7px 10px; border-bottom: 1px solid var(--grid); font: 12px/1.5 ui-monospace, monospace; }
+.event:last-child { border-bottom: none; }
+.event time { color: var(--text-muted); }
+.event.warning span { color: #9a6200; }
+.event.error span { color: var(--v-fail); }
+
+@media (max-width: 680px) {
+  header.top, main { padding-left: 16px; padding-right: 16px; }
+  .topline, .page-actions { align-items: flex-start; flex-direction: column; }
+  .form-grid { grid-template-columns: 1fr; }
+  .event { grid-template-columns: 1fr; gap: 2px; }
+}

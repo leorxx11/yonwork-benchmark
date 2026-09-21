@@ -106,3 +106,45 @@ CREATE TABLE IF NOT EXISTS usage_samples (
     CONSTRAINT fk_usage_run FOREIGN KEY (benchmark_id)
         REFERENCES runs (benchmark_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Web 控制台提交的执行任务。任务状态属于控制面，不是模型判定结果。
+CREATE TABLE IF NOT EXISTS benchmark_jobs (
+    job_id             CHAR(32)     NOT NULL PRIMARY KEY,
+    batch_id           VARCHAR(64)  NOT NULL,
+    experiment_name    VARCHAR(128) NOT NULL,
+    case_catalog_path  VARCHAR(512) NOT NULL DEFAULT 'cases/catalog.yaml',
+    case_set_id        VARCHAR(64)  NOT NULL,
+    product            VARCHAR(32)  NOT NULL DEFAULT 'yonwork',
+    model_query        VARCHAR(128) NOT NULL DEFAULT '',
+    agent_id           VARCHAR(64)  NOT NULL DEFAULT 'main',
+    timeout_seconds    DECIMAL(10,3) NOT NULL DEFAULT 600,
+    limit_runs         INT NOT NULL DEFAULT 0,
+    collect_usage      BOOLEAN NOT NULL DEFAULT TRUE,
+    export_xlsx        BOOLEAN NOT NULL DEFAULT TRUE,
+    status             ENUM('Queued','Running','Completed','Failed','Cancelled')
+                       NOT NULL DEFAULT 'Queued',
+    total_runs         INT NOT NULL DEFAULT 0,
+    completed_runs     INT NOT NULL DEFAULT 0,
+    suite_id           VARCHAR(64) NULL,
+    results_path       VARCHAR(512) NULL,
+    worker_id          VARCHAR(128) NULL,
+    cancel_requested   BOOLEAN NOT NULL DEFAULT FALSE,
+    error              TEXT,
+    created_at         DATETIME(3) NOT NULL,
+    started_at         DATETIME(3) NULL,
+    finished_at        DATETIME(3) NULL,
+    updated_at         DATETIME(3) NOT NULL,
+    UNIQUE KEY uk_job_batch (batch_id),
+    KEY idx_job_status_created (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS benchmark_job_events (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    job_id      CHAR(32) NOT NULL,
+    level       VARCHAR(16) NOT NULL DEFAULT 'info',
+    message     TEXT NOT NULL,
+    created_at  DATETIME(3) NOT NULL,
+    KEY idx_job_event (job_id, id),
+    CONSTRAINT fk_job_event FOREIGN KEY (job_id)
+        REFERENCES benchmark_jobs (job_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

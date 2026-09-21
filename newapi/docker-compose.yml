@@ -6,7 +6,8 @@
 # 真要上 MySQL 再把下面的 SQL_DSN 和 mysql 服务打开。
 services:
   new-api:
-    image: calciumion/new-api:latest
+    # 已验证版本 v1.0.0-rc.38；固定摘要避免 latest 静默变化。
+    image: calciumion/new-api@sha256:0a4d62b1b2b796a43a5e0ef92d49f12e0f229ab206b8f5a3a4cd42990121bfe1
     container_name: new-api
     restart: unless-stopped
     # 只绑 127.0.0.1。mirrored 网络模式下 Windows 侧 127.0.0.1:3000 照常可用

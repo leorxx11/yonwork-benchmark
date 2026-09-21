@@ -2,8 +2,13 @@
 {% block crumb %}全部对比实验{% endblock %}
 {% block body %}
 
-<h2>对比实验</h2>
-<p class="hint">一个 suite = 一次对比实验，下面挂着四个模式的批次（产品 × 模型）。</p>
+<div class="page-actions">
+  <div>
+    <h2>对比实验</h2>
+    <p class="hint">一个 suite = 一次对比实验，下面挂着多个产品 × 模型批次。</p>
+  </div>
+  <a class="button primary" href="/jobs/new">开始测试</a>
+</div>
 
 {% if suites %}
 <table>
@@ -27,9 +32,7 @@
 </table>
 {% else %}
 <div class="panel">
-  还没有数据。先跑一批再入库：
-  <pre class="prompt">.venv/bin/python -m runner --workbook cases/yonwork_benchmark.xlsx --model newapi
-.venv/bin/python -m runner.ingest --results results --suite "我的实验"</pre>
+  还没有数据。可以从 <a href="/jobs/new">开始测试</a> 创建第一批任务。
 </div>
 {% endif %}
 

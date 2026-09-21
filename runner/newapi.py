@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -37,7 +38,14 @@ class NewApiConfig:
 
     @classmethod
     def load(cls, path: Path | None = None) -> "NewApiConfig":
-        values = load_env_file(path or project_root() / CREDENTIALS_FILE)
+        # 宿主机沿用 credentials.env；容器通过 Compose 注入环境变量。
+        root_values = load_env_file(project_root() / ".env")
+        credential_values = load_env_file(path or project_root() / CREDENTIALS_FILE)
+        values = (
+            {**root_values, **credential_values, **os.environ}
+            if path is not None
+            else {**credential_values, **root_values, **os.environ}
+        )
         token = values.get("NEWAPI_ACCESS_TOKEN", "")
         if not token:
             raise NewApiError(

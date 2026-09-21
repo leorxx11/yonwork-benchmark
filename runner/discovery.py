@@ -17,6 +17,7 @@ APPDATA_SUBDIR = "AppData/Roaming/yonwork"
 WINDOWS_USERS_ROOT = Path("/mnt/c/Users")
 
 ENV_RUNTIME_FILE = "YONWORK_RUNTIME_FILE"
+ENV_RUNTIME_HOST = "YONWORK_RUNTIME_HOST"
 ENV_BASE_URL = "YONCLAW_HOST_API_URL"
 ENV_TOKEN = "YONCLAW_HOST_API_TOKEN"
 
@@ -101,8 +102,13 @@ def discover(runtime_file: Path | None = None) -> HostEndpoint:
 
     path = candidates[0]
     raw = load_runtime_file(path)
+    runtime_host = os.environ.get(ENV_RUNTIME_HOST, "127.0.0.1").strip()
+    if not runtime_host:
+        raise DiscoveryError(f"{ENV_RUNTIME_HOST} 不能为空")
     return HostEndpoint(
-        base_url=f"http://127.0.0.1:{raw['port']}",  # mirrored 模式下 WSL 直连有效
+        # 宿主机通常用 127.0.0.1；非 host-network 容器可用
+        # ENV_RUNTIME_HOST 改成宿主机地址。端口仍从运行时文件动态读取。
+        base_url=f"http://{runtime_host}:{raw['port']}",
         token=raw["token"],
         pid=raw.get("pid") if isinstance(raw.get("pid"), int) else None,
         version=raw.get("version") if isinstance(raw.get("version"), str) else None,

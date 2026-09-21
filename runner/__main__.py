@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Sequence
 
 from .batch import BatchOptions, exit_code_for, run_batch
+from .case_catalog import (
+    DEFAULT_CASE_SET,
+    DEFAULT_CATALOG_PATH,
+    CaseCatalogError,
+    load_case_set,
+)
 from .cases import CasesError, load_cases
 from .catalog import CatalogError, list_model_choices, resolve_model_choice
 from .client import ChatClient, DEFAULT_TURN_TIMEOUT_SECONDS
@@ -28,8 +34,19 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m runner",
         description="YonWork Host API 基准测试：批量跑 prompt，落 JSONL，再汇总。",
     )
-    parser.add_argument("--workbook", type=Path, help="提示词工作簿 (.xlsx)")
-    parser.add_argument("--sheet", default="Cases", help="提示词工作表名")
+    parser.add_argument(
+        "--cases",
+        type=Path,
+        default=DEFAULT_CATALOG_PATH,
+        help="YAML Case Catalog（默认 cases/catalog.yaml）",
+    )
+    parser.add_argument(
+        "--case-set", default=DEFAULT_CASE_SET, help="Catalog 中的 Case Set id"
+    )
+    parser.add_argument(
+        "--workbook", type=Path, help="兼容旧流程：改从 Excel 工作簿读取"
+    )
+    parser.add_argument("--sheet", default="Cases", help="旧 Excel 工作表名")
     parser.add_argument("--out-dir", type=Path, default=Path("results"), help="产物目录")
     parser.add_argument("--batch-id", default="", help="默认用当前时间戳")
     parser.add_argument("--id-prefix", default="bench", help="BenchmarkId 前缀")
@@ -79,22 +96,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_USAGE
         return 0
 
-    if args.workbook is None:
-        _log("缺少 --workbook")
-        return EXIT_USAGE
-
     try:
-        cases = load_cases(args.workbook, args.sheet)
-    except CasesError as exc:
+        if args.workbook is not None:
+            cases = load_cases(args.workbook, args.sheet)
+            definitions = cases.cases
+            enabled_count = cases.enabled_count
+            warnings = cases.warnings
+            source_label = f"Excel {args.workbook}:{args.sheet}"
+        else:
+            case_set = load_case_set(args.cases, args.case_set)
+            definitions = list(case_set.cases)
+            enabled_count = case_set.enabled_count
+            warnings = [
+                f"{item.case_name} 已禁用" for item in case_set.cases if not item.enabled
+            ]
+            source_label = f"Catalog {args.cases}:{case_set.case_set_id}"
+    except (CasesError, CaseCatalogError) as exc:
         _log(f"用例读取失败：{exc}")
         return EXIT_USAGE
-    for warning in cases.warnings:
+    for warning in warnings:
         _log(f"提示：{warning}")
 
-    items = expand_cases(cases.cases)
+    items = expand_cases(definitions)
     if args.limit > 0:
         items = items[: args.limit]
-    _log(f"批次 {batch_id}：{cases.enabled_count} 个 Case，共 {len(items)} 轮")
+    _log(
+        f"批次 {batch_id}：{enabled_count} 个 Case，共 {len(items)} 轮"
+        f"（来源 {source_label}）"
+    )
 
     try:
         endpoint = discover()

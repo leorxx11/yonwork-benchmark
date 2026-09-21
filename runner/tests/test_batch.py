@@ -84,7 +84,9 @@ class BatchTests(unittest.TestCase):
         client, records = self._run(["A", "B", "C"])
         self.assertEqual(3, len(set(client.session_keys)))
         for record in records:
-            self.assertTrue(record.session_key.endswith(record.benchmark_id))
+            # sessionKey 是小写的（见 session_key_for），BenchmarkId 保留原样大小写，
+            # 所以这里按小写比。两者必须仍然一一对应。
+            self.assertTrue(record.session_key.endswith(record.benchmark_id.lower()))
 
     def test_benchmark_id_is_the_idempotency_key_and_run_id(self) -> None:
         _, records = self._run(["A"])
@@ -101,6 +103,20 @@ class BatchTests(unittest.TestCase):
         _, records = self._run(["A", ChatTimeout("超时")])
         self.assertEqual(2, exit_code_for(records))
         self.assertEqual(4, exit_code_for([]))
+
+    def test_stop_check_prevents_starting_the_next_round(self) -> None:
+        client = _FakeClient(["A", "B", "C"])
+        completed = []
+        records = run_batch(
+            items(3),
+            client=client,  # type: ignore[arg-type]
+            endpoint=HostEndpoint(base_url="http://127.0.0.1:1"),
+            options=self.options,
+            on_record=completed.append,
+            should_stop=lambda: len(completed) >= 1,
+        )
+        self.assertEqual(1, len(records))
+        self.assertEqual(1, len(client.session_keys))
 
 
 if __name__ == "__main__":

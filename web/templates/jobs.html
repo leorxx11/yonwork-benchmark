@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}测试任务{% endblock %}
+{% block crumb %}测试任务{% endblock %}
+{% block body %}
+
+<div class="page-actions">
+  <div>
+    <h2>测试任务</h2>
+    <p class="hint">任务由独立 Worker 串行执行，刷新或关闭页面不会中断跑批。</p>
+  </div>
+  <a class="button primary" href="/jobs/new">新建任务</a>
+</div>
+
+{% if jobs %}
+<table>
+  <tr>
+    <th>实验</th><th>Case Set</th><th>模型</th><th>状态</th>
+    <th class="num">进度</th><th>创建时间(UTC)</th><th></th>
+  </tr>
+  {% for job in jobs %}
+  <tr>
+    <td>{{ job.experiment_name }}</td>
+    <td><code>{{ job.case_set_id }}</code></td>
+    <td>{{ job.model_query or '智能体默认' }}</td>
+    <td><span class="job-state s-{{ job.status }}">{{ job.status }}</span></td>
+    <td class="num">{{ job.completed_runs }}/{{ job.total_runs or '—' }}</td>
+    <td>{{ job.created_at }}</td>
+    <td><a href="/jobs/{{ job.job_id }}">详情</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="panel">还没有任务。</div>
+{% endif %}
+
+{% endblock %}

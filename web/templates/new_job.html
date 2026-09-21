@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}开始测试{% endblock %}
+{% block crumb %}<a href="/jobs">测试任务</a> / 新建{% endblock %}
+{% block body %}
+
+<h2>开始测试</h2>
+<p class="hint">Case 来自版本化 YAML Catalog：<code>{{ catalog_path }}</code></p>
+
+{% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+{% if catalog_problem %}<div class="notice error">{{ catalog_problem }}</div>{% endif %}
+
+<div class="runtime {% if runtime.ok and runtime.logged_in %}ready{% else %}not-ready{% endif %}">
+  <strong>YonWork 前置检查</strong>
+  {% if runtime.ok and runtime.logged_in %}
+    <span>已就绪 · {{ runtime.endpoint }}{% if runtime.version %} · v{{ runtime.version }}{% endif %}</span>
+  {% else %}
+    <span>{{ runtime.problem or '不可用' }}</span>
+  {% endif %}
+</div>
+
+<form method="post" action="/jobs" class="job-form">
+  <label>
+    <span>实验名称</span>
+    <input name="experiment_name" value="{{ default_name }}" required maxlength="128">
+    <small>同名任务会归到同一个对比实验中。</small>
+  </label>
+
+  <label>
+    <span>Case Set</span>
+    <select name="case_set_id" required {% if not case_sets %}disabled{% endif %}>
+      {% for item in case_sets %}
+      <option value="{{ item.case_set_id }}">
+        {{ item.name }}（{{ item.enabled_count }} Case / {{ item.total_runs }} 轮）
+      </option>
+      {% endfor %}
+    </select>
+  </label>
+
+  {% if case_sets %}
+  <div class="case-set-list">
+    {% for item in case_sets %}
+    <div>
+      <code>{{ item.case_set_id }}</code> — {{ item.description or item.name }}
+      {% if item.required_env %}
+      <small>需要环境变量：{{ item.required_env | join('、') }}</small>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <label>
+    <span>模型</span>
+    <select name="model_query">
+      <option value="">智能体当前默认模型</option>
+      {% for model in runtime.models %}
+      <option value="{{ model.choice_id or model.model_id }}">
+        {{ model.display_name or model.model_id }}{% if model.is_default %}（默认）{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    {% if not runtime.models %}<small>YonWork 就绪后才会显示可选模型；仍可提交默认模型任务。</small>{% endif %}
+  </label>
+
+  <div class="form-grid">
+    <label>
+      <span>单轮超时（秒）</span>
+      <input name="timeout_seconds" type="number" min="1" step="1" value="600" required>
+    </label>
+    <label>
+      <span>最多运行轮次</span>
+      <input name="limit_runs" type="number" min="0" step="1" value="0" required>
+      <small>0 表示运行该 Case Set 的全部轮次。</small>
+    </label>
+  </div>
+
+  <label class="check"><input type="checkbox" name="collect_usage" checked> 采集端上与会话 Token 用量</label>
+  <label class="check"><input type="checkbox" name="export_xlsx" checked> 同时导出结果 Excel</label>
+
+  <div class="actions">
+    <button class="primary" type="submit"
+            {% if not case_sets or not runtime.ok or not runtime.logged_in %}disabled{% endif %}>
+      加入测试队列
+    </button>
+    <a class="button" href="/jobs">取消</a>
+  </div>
+</form>
+
+{% endblock %}

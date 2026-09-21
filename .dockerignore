@@ -1,0 +1,14 @@
+.git
+.venv
+**/__pycache__
+**/*.pyc
+results
+infra/data
+newapi/data
+newapi/logs
+newapi/credentials.env
+infra/.env
+.env
+benchmark-companion
+archive
+docs

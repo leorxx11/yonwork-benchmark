@@ -1,0 +1,32 @@
+<div class="tiles">
+  <div class="tile"><div class="value text"><span class="job-state s-{{ job.status }}">{{ job.status }}</span></div><div class="label">任务状态</div></div>
+  <div class="tile"><div class="value">{{ job.completed_runs }}/{{ job.total_runs or '—' }}</div><div class="label">已完成轮次</div></div>
+  <div class="tile"><div class="value text">{{ job.model_query or '默认模型' }}</div><div class="label">模型</div></div>
+  <div class="tile"><div class="value text">{{ job.case_set_id }}</div><div class="label">Case Set</div></div>
+</div>
+
+{% if job.total_runs %}
+<div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="{{ job.total_runs }}" aria-valuenow="{{ job.completed_runs }}">
+  <span style="width:{{ (100 * job.completed_runs / job.total_runs) | round(1) }}%"></span>
+</div>
+{% endif %}
+
+{% if job.error %}<div class="notice error">{{ job.error }}</div>{% endif %}
+
+<div class="actions">
+  {% if job.suite_id %}<a class="button primary" href="/suite/{{ job.suite_id }}">查看报告</a>{% endif %}
+  {% if job.status in ['Queued', 'Running'] %}
+  <form method="post" action="/jobs/{{ job.job_id }}/cancel">
+    <button class="danger" type="submit">停止任务</button>
+  </form>
+  {% endif %}
+</div>
+
+<h2>执行日志</h2>
+<div class="event-log">
+  {% for event in events %}
+  <div class="event {{ event.level }}"><time>{{ event.created_at }}</time><span>{{ event.message }}</span></div>
+  {% else %}
+  <div class="hint">暂无日志</div>
+  {% endfor %}
+</div>

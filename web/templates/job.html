@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}任务 {{ job.job_id[:8] }}{% endblock %}
+{% block crumb %}<a href="/jobs">测试任务</a> / {{ job.job_id[:8] }}{% endblock %}
+{% block body %}
+
+<h2>{{ job.experiment_name }}</h2>
+<p class="hint"><code>{{ job.batch_id }}</code></p>
+
+<div id="job-status"
+     data-poll-url="/jobs/{{ job.job_id }}/status"
+     data-poll-interval="2000">
+  正在加载任务状态…
+</div>
+
+{% endblock %}

@@ -5,12 +5,15 @@
 # WSL/Linux 执行的源码与配置统一保留 LF。
 *.py text eol=lf
 *.sh text eol=lf
+Dockerfile text eol=lf
+requirements.txt text eol=lf
 *.md text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
 *.sql text eol=lf
 *.html text eol=lf
 *.css text eol=lf
+*.js text eol=lf
 *.mjs text eol=lf
 
 # Windows 原生脚本使用 CRLF；二进制资产不做换行转换。

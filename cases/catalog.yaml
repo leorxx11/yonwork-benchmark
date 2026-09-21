@@ -1,0 +1,93 @@
+version: 1
+
+case_sets:
+  - id: smoke
+    name: 基础冒烟
+    description: 验证普通问答与工具调用链路是否可用。
+    cases:
+      - id: Case01
+        prompt: 查看今天北京天气怎么样？
+        runs: 2
+        enabled: false
+        assertions:
+          min_length: 1
+
+      - id: Case02
+        prompt: 你好！
+        runs: 1
+        enabled: true
+        assertions:
+          min_length: 1
+
+  - id: long-text
+    name: 长文本文件检索
+    description: 读取本地《西游记》并验证长文本检索；文件的 Windows 路径由环境变量提供。
+    cases:
+      - id: Case01
+        prompt: >-
+          打开本地文件 ${YONWORK_XIYOUJI_PATH}，仅依据该文件内容完成任务，不要使用网络搜索，
+          也不要凭已有的《西游记》知识直接回答。请在全文中搜索“凤仙郡”，并回答：
+          1）“凤仙郡”在全文中一共出现多少次；
+          2）首次出现和最后一次出现分别位于哪一回，请给出完整回目标题；
+          3）分别摘录首次出现和最后一次出现所在的完整自然段；
+          4）根据文件内容，用不超过 100 字概括凤仙郡相关情节。
+          最后按“出现次数 / 首次出现 / 最后出现 / 情节概括”四个部分输出。
+          如果无法读取该本地文件，请明确说明失败原因，不要猜测答案。
+        runs: 3
+        enabled: true
+        assertions:
+          expect:
+            - 凤仙郡
+          forbid:
+            - 无法读取
+          min_length: 100
+
+  - id: client-probe
+    name: 客户端体验探针场景
+    description: >-
+      给 runner.client_probe 用，不进主跑批。测的是「Agent 数据到达客户端之后，
+      YonWork 呈现不同复杂度内容是否引入可感知延迟」。
+      **输出长度必须受控**——测的是渲染 X 字节的成本，X 每轮不一样就没法比，
+      所以这里全用「恰好 N 行」这类确定性指令，并在结果里记录实际字符数做归一化。
+    cases:
+      - id: S1
+        prompt: 请用三句话介绍一下杭州，不要用列表，不要用 Markdown 格式。
+        runs: 3
+        assertions:
+          min_length: 30
+
+      - id: S2
+        prompt: >-
+          输出一个 Markdown 表格，恰好 60 行数据（不含表头）。
+          表头为：序号 | 名称 | 分类 | 说明。
+          序号从 1 递增到 60，名称用「条目N」，分类在 A/B/C 三者间循环，
+          说明固定写「这是用于渲染压力测试的占位说明文本」。
+          只输出表格本身，前后不要任何多余文字。
+        runs: 3
+        assertions:
+          expect: ["条目60"]
+          min_length: 2000
+
+      - id: S3
+        prompt: >-
+          输出一个 Markdown 表格，恰好 250 行数据（不含表头）。
+          表头为：序号 | 名称 | 分类 | 说明。
+          序号从 1 递增到 250，名称用「条目N」，分类在 A/B/C 三者间循环，
+          说明固定写「这是用于渲染压力测试的占位说明文本」。
+          只输出表格本身，前后不要任何多余文字。
+        runs: 3
+        enabled: false
+        assertions:
+          expect: ["条目250"]
+          min_length: 8000
+
+      - id: S4
+        prompt: >-
+          依次输出三部分，每部分之间空一行，不要任何解释文字：
+          第一部分：一个恰好 30 行数据的 Markdown 表格，表头为 序号 | 键 | 值。
+          第二部分：一个 python 代码块，包含恰好 40 行代码，内容为打印 1 到 40 的循环展开写法。
+          第三部分：一个恰好 20 项的嵌套无序列表，每项下再带 2 个子项。
+        runs: 3
+        enabled: false
+        assertions:
+          min_length: 1500

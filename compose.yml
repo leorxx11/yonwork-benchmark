@@ -1,0 +1,107 @@
+name: yonwork-benchmark
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${BENCH_DB_PORT:-3307}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请先运行 ./scripts/bootstrap.sh}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-benchmark}
+      MYSQL_USER: ${MYSQL_USER:-bench}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请先运行 ./scripts/bootstrap.sh}
+      TZ: UTC
+    command:
+      - --default-time-zone=+00:00
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - ./infra/data:/var/lib/mysql
+      - ./infra/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  new-api:
+    # 当前已验证版本 v1.0.0-rc.38；固定摘要，避免换机时 latest 静默变化。
+    image: calciumion/new-api@sha256:0a4d62b1b2b796a43a5e0ef92d49f12e0f229ab206b8f5a3a4cd42990121bfe1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${NEWAPI_PORT:-3000}:3000"
+    volumes:
+      - ./newapi/data:/data
+      - ./newapi/logs:/app/logs
+    environment:
+      TZ: Asia/Shanghai
+      SESSION_SECRET: ${SESSION_SECRET:?请先运行 ./scripts/bootstrap.sh}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  web:
+    image: yonwork-benchmark:local
+    build:
+      context: .
+      args:
+        APP_UID: ${HOST_UID:-1000}
+        APP_GID: ${HOST_GID:-1000}
+    restart: unless-stopped
+    init: true
+    # WSL 原生 Docker 使用 host 网络后，容器里的 127.0.0.1 与 WSL 共用；
+    # mirrored 网络再把它连到 Windows loopback。这样 YonWork 可以安全地只绑 127.0.0.1。
+    network_mode: host
+    command: ["python", "-m", "uvicorn", "web.api:app", "--host", "127.0.0.1", "--port", "${BENCH_WEB_PORT:-8000}"]
+    environment: &benchmark-environment
+      BENCH_DB_HOST: 127.0.0.1
+      BENCH_DB_PORT: ${BENCH_DB_PORT:-3307}
+      BENCH_DB_NAME: ${MYSQL_DATABASE:-benchmark}
+      BENCH_DB_USER: ${MYSQL_USER:-bench}
+      BENCH_DB_PASSWORD: ${MYSQL_PASSWORD}
+      BENCH_CASE_CATALOG: cases/catalog.yaml
+      YONWORK_RUNTIME_FILE: /yonwork-data/host-api-runtime.json
+      YONWORK_RUNTIME_HOST: 127.0.0.1
+      YONWORK_XIYOUJI_PATH: ${YONWORK_XIYOUJI_PATH:-}
+      NEWAPI_BASE_URL: http://127.0.0.1:${NEWAPI_PORT:-3000}
+      NEWAPI_USER_ID: ${NEWAPI_USER_ID:-1}
+      NEWAPI_ACCESS_TOKEN: ${NEWAPI_ACCESS_TOKEN:-}
+      NO_PROXY: "*"
+      no_proxy: "*"
+    volumes: &benchmark-volumes
+      - ./results:/app/results
+      - ./cases:/app/cases:ro
+      - type: bind
+        source: ${YONWORK_DATA_DIR:?请先运行 ./scripts/bootstrap.sh}
+        target: /yonwork-data
+        read_only: true
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${BENCH_WEB_PORT:-8000}/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  worker:
+    # 与 Web 共用同一镜像，避免首次启动时并行构建两份完全相同的层。
+    image: yonwork-benchmark:local
+    command: ["python", "-m", "runner.worker"]
+    restart: unless-stopped
+    init: true
+    # 收到 compose stop 后不再开下一轮，并给当前轮足够时间写完 JSONL。
+    stop_grace_period: 11m
+    network_mode: host
+    environment: *benchmark-environment
+    volumes: *benchmark-volumes
+    depends_on:
+      mysql:
+        condition: service_healthy
+      new-api:
+        condition: service_healthy

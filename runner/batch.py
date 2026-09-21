@@ -33,6 +33,8 @@ from .usage import (
 
 
 Reporter = Callable[[str], None]
+RecordReporter = Callable[[RunRecord], None]
+StopCheck = Callable[[], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +54,8 @@ def run_batch(
     endpoint: HostEndpoint,
     options: BatchOptions,
     report: Reporter = lambda _message: None,
+    on_record: RecordReporter = lambda _record: None,
+    should_stop: StopCheck = lambda: False,
 ) -> list[RunRecord]:
     """跑一批，每轮之间完全隔离。
 
@@ -60,11 +64,15 @@ def run_batch(
     """
     records: list[RunRecord] = []
     for item in items:
+        if should_stop():
+            report("收到停止请求，不再开始下一轮")
+            break
         record = run_one(
             item, client=client, endpoint=endpoint, options=options, report=report
         )
         append_jsonl(options.results_path, record)
         records.append(record)
+        on_record(record)
         report(
             f"[{item.position + 1}/{len(items)}] {item.case_name}#{item.run_no}"
             f" → {record.verdict.value}"
