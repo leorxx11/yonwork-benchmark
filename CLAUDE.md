@@ -115,7 +115,7 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 
 | 路径 | 说明 | 状态 |
 |---|---|---|
-| `runner/` | 驱动 + 五层断言 + 入库，主链路 | 在用 |
+| `runner/` | 驱动层（`drivers/`）+ 五层断言 + 入库，主链路 | 在用 |
 | `web/` | 测试控制台 + 报告，FastAPI + Jinja + 本地原生 JS | 在用 |
 | `infra/` | 结果库 MySQL 8.4（:3307），JSONL 可随时重放 | 在用 |
 | `newapi/` | **被测对象**的模型网关（:3000），不是我们的基础设施 | 在用 |
@@ -134,9 +134,12 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 这个脚本留作手工交叉验证——它不依赖我们自己的任何代码，
 所以当 runner 的数字可疑时，用它判断到底是谁错了。这是**两端，不是重复**。
 
-**`benchmark-companion/` 不是遗留**：它服务的是 **WorkBuddy**，不是 YonWork。
-`runner/` 覆盖的是 YonWork 那两个模式，**WorkBuddy 那两个模式目前只有这条人工通路**。
-四个模式里有一半的数据质量和另一半不在一个等级上，这是七-3.2 要等 WorkBuddy 结论的原因。
+**`benchmark-companion/` 可以准备退场了**：它服务的是 **WorkBuddy**，不是 YonWork。
+`runner/drivers/workbuddy.py` 已经实测跑通（见七-3.2），
+**WorkBuddy 那两个模式终于和 YonWork 那两个走同一条自动通路、同一套断言**——
+「四个模式里有一半数据质量低一档」这个缺口到此补上。
+先别急着删：目前只验证过默认模型、单轮、关工具那一种组合，
+等多模型和工具调用的 case 也跑过一轮，再决定它的去留。
 
 **`yonwork_usage/` 先别删**：它读 `llm-observer/*.jsonl`，`runner/sessionlog.py` 读
 `sessions/*.jsonl`，**是两个不同的文件**。取 token 已被覆盖，但 llm-observer 独有
@@ -213,7 +216,7 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 ## 七、待办（按优先级）
 
 主链路已完工：驱动 + YAML 用例 + 五层断言 + 三来源用量 + 持久任务队列 + MySQL +
-Web 测试控制台与报告全部接通，runner 113 个、web 6 个离线单测。
+Web 测试控制台与报告全部接通，runner 132 个、web 8 个离线单测。
 链路命令见根目录 `README.md`。
 
 下面按**批次**排，同一批内可以任意顺序，跨批有依赖。
@@ -452,19 +455,47 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
    `APICalls == 0` → `Invalid`）目前只有事后 `reconcile` 拉 NewAPI 才有数，
    跑批当时记的是「未采集」。**别用 0 冒充**——那等于把「没采到」说成「没出错」。
 
-3.2 **抽 `Driver` 接口 + 跨模式实验编排（原 §7-2）。**
-   **WorkBuddy 报告已回**（`docs/workbuddy-probe-report.md`，提示词在 `workbuddy-probe-prompt.md`）。
-   **结论：能无人值守跑批，「四个模式」的对等性问题解了。**
-   - 主路线是**内置 headless CLI**（`-p --output-format json`），一轮对话能拿到
-     答案 + input/output token + 请求模型 + **实际模型** + 内外耗时。
-   - 桌面那三个 loopback 端口（11983 / 11986 / 18488）**都不是聊天 API**，别再去试。
-   - `codebuddy --serve` 的 REST/ACP 能跑通对话，但**不返回 token / 实际模型 / 单轮耗时**，
-     且有订阅竞态，只能作备选，不能当计量主路线。
-   - 建议契约：**一个 case = 一个新进程 + 全新 session id + `--no-session-persistence`**，
-     不要用 `--continue` / `--resume`，不要复用 session id。
-   
-   所以现在可以抽 `Driver` 了：YonWork 走 Host API + SSE，WorkBuddy 走一次性进程 + JSON，
-   两种形状都在手上，接口不会再按单一实现写死。
+3.2 ~~抽 `Driver` 接口~~ **已完成 2026-09-21。** 跨模式一键编排仍未做，见下。
+   接口在 `runner/drivers/`，`batch.py` 现在对被测产品一无所知——
+   隔离、逐轮落盘、判定、计数这四件事共用，产品相关的全在驱动后面。
+   YonWork 主链路**已实测**（Web 提交 → Worker → 驱动 → 入库 → 报告，跑通一轮 Pass）。
+
+   **两边形状差得越远，接口越不会写歪**，这是当初等 WorkBuddy 报告的原因：
+
+   | | YonWork | WorkBuddy |
+   |---|---|---|
+   | 通路 | 常驻 Host API + SSE | 每轮一个一次性进程 + JSON |
+   | 隔离 | 全新 `sessionKey`（全小写） | 全新 `--session-id` + `--no-session-persistence` |
+   | 终止 | `chat.complete` / `state:"final"` | 最后一条 `type:"result"` |
+   | 用量 | 事后采两个来源 | 随本轮输出回来，按 session-id 精确匹配 |
+
+   **抽接口当场抓出来的三个「只有一个实现时看不见」的问题：**
+   - `NORMAL_STOP_REASONS` 只有 YonWork 的取值，WorkBuddy 的 `success` 会被判 Fail。
+     修法是**往断言层的词表里加取值**，不是让驱动把自己的值映射成 `stop`——
+     后者等于驱动在判定「这算不算正常结束」，正是二-3 要拦的。
+     `USAGE_SOURCES` / `EXACT_MATCHES` 同理，都是跨产品的表。
+   - `usage_samples.source` 是 **ENUM**，新来源会被 MySQL 静默拒掉，
+     症状跟六-3 的端上漏记一模一样，极难查。已改 VARCHAR + 入库时按需迁移。
+   - `BatchOptions.product` 和驱动各存了一份产品名。已删掉前者，只认 `driver.product`。
+
+   **WorkBuddy 活链路也实测跑通了**（2026-09-21，CLI、默认模型、`--tools ''`）：
+   `runId == BenchmarkId`、`result:success`、用量 3645/8 tok、
+   实际模型 `deepseek-v4.1-flash`、按 session-id 精确匹配、判定 Pass。
+   报告列的七条成功判定有五条直接落在现成断言上，不用另写：`subtype` → 完成性层、
+   `session_id` → 产物层 run-id（所以 `--session-id` 直接用 BenchmarkId）、
+   实际模型 → 成本层 model-match。
+
+   **实测撞出来的两条，用之前必须知道：**
+   - ⚠️ **冷启动占大头**：外层 **16.744s**，内部 `duration_ms` 只有 **3.087s**——
+     每个 case 一个新进程，**13.6s 是冷启动**，是模型耗时的 4 倍多。
+     **别拿它直接跟 YonWork 的常驻服务比耗时**，那不是同一回事。
+     两个数都存着就是为了能把这一段拆出来。
+   - ⚠️ **容器里的 Worker 跑不了它**：它要起 Windows 进程，而 compose 里的 worker
+     既看不到 `/mnt/d` 也没有 WSL interop（已实测确认）。
+     要从 Web 控制台跑 WorkBuddy，Worker 得在宿主机原生起（`python -m runner.worker`）。
+     控制台的产品选项上已经写了这个条件。
+
+   **仍未做：跨模式一键编排**——现在还是「同一个实验名提交多次，每次换产品/模型」。
 
 ### 明确往后放的（写下来是为了不再反复捡起）
 
