@@ -28,8 +28,10 @@ def _runs_for(connection: Any, suite_id: str) -> list[dict[str, Any]]:
     with connection.cursor() as cursor:
         cursor.execute(
             """
-            SELECT r.benchmark_id, r.started_at, r.ended_at, b.model_mode
+            SELECT r.benchmark_id, r.started_at, r.ended_at, b.model_mode,
+                   u.matched_by AS backend_matched_by
             FROM runs r JOIN batches b ON b.batch_id = r.batch_id
+            LEFT JOIN usage_samples u ON u.benchmark_id = r.benchmark_id AND u.source = 'newapi'
             WHERE b.suite_id = %s AND r.started_at IS NOT NULL
             ORDER BY r.started_at
             """,
@@ -56,7 +58,14 @@ def reconcile_suite(suite_id: str, *, token_name: str = "") -> dict[str, Any]:
         samples, unmatched = match_logs(logs, runs)
 
         with connection.cursor() as cursor:
+            measured = {
+                run["benchmark_id"] for run in runs
+                if run.get("backend_matched_by") == "time-window+model"
+            }
             for sample in samples:
+                # 逐轮证据已用于判定并落 JSONL；宽窗补采不得覆盖成另一组计数。
+                if sample.benchmark_id in measured:
+                    continue
                 cursor.execute(
                     UPSERT_SQL,
                     (

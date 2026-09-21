@@ -5,6 +5,7 @@ YonWork，逐轮保存结果、采集用量、执行五层断言，最后在同�
 
 背景、环境坑、架构决策和待办见 [CLAUDE.md](CLAUDE.md)。本轮基础设施与前端集成的完整改动
 记录见 [docs/implementation-summary.md](docs/implementation-summary.md)。
+逐轮 ErrorCalls 采集的范围和验收结果见 [docs/error-calls-collection.md](docs/error-calls-collection.md)。
 
 ## 换机后一键启动
 

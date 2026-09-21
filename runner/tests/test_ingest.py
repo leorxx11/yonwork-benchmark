@@ -107,6 +107,18 @@ class ModelModeTests(unittest.TestCase):
 
 
 class RowTests(unittest.TestCase):
+    def test_backend_counts_are_not_copied_into_other_sources(self):
+        payload = record()
+        payload["log_stats"] = {"source": "newapi", "api_calls": 2, "error_calls": 1}
+        payload["usage_samples"] = [
+            {"source": "device-api"}, {"source": "session-jsonl"},
+            {"source": "newapi", "api_calls": 2, "error_calls": 1,
+             "log_entries": [{"type": 2}, {"type": 4}]},
+        ]
+        rows = _usage_rows(payload)
+        self.assertEqual([(None, None), (None, None), (2, 1)], [r[10:12] for r in rows])
+        self.assertEqual([{"type": 2}, {"type": 4}], json.loads(rows[2][14])["log_entries"])
+
     def test_run_row_converts_seconds_to_millis(self) -> None:
         row = _run_row(record(), "batch-1")
         self.assertEqual(3086, row[10])

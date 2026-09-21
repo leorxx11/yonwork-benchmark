@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import sqlite3
+from dataclasses import replace
+from unittest.mock import patch
 from pathlib import Path
 
 from runner.batch import BatchOptions, exit_code_for, run_batch
 from runner.client import ChatTimeout, session_key_for
 from runner.drivers import UsageCollection
-from runner.models import ChatTurn, Expectations, TaskItem, Verdict, now_iso
+from runner.models import ChatTurn, Expectations, TaskItem, UsageSample, Verdict, now_iso
+from runner.report import build_database
 
 
 class _FakeDriver:
@@ -135,6 +139,47 @@ class BatchTests(unittest.TestCase):
         """产品维度只有驱动说了算，BatchOptions 不再重复声明一份。"""
         driver, records = self._run(["A"])
         self.assertEqual(driver.product, records[0].product)
+
+    def test_backend_errors_affect_verdict_before_jsonl_and_report(self):
+        driver = _FakeDriver(["successful retry"])
+        collected = UsageCollection(samples=(
+            UsageSample(source="device-api", total_tokens=100),
+            UsageSample(source="newapi", total_tokens=200, api_calls=2, error_calls=1),
+        ))
+        with patch.object(driver, "collect_usage", return_value=collected):
+            records = run_batch(items(1), driver=driver,
+                                options=replace(self.options, collect_usage=True))
+        record = records[0]
+        self.assertEqual(Verdict.FAIL, record.verdict)
+        self.assertEqual("device-api", record.usage.source)
+        self.assertEqual("newapi", record.log_stats.source)
+        self.assertEqual(1, exit_code_for(records))
+        saved = json.loads(self.results.read_text())
+        self.assertEqual("Fail", saved["verdict"])
+        self.assertEqual(1, saved["log_stats"]["error_calls"])
+        db = self.results.with_suffix(".db")
+        build_database(self.results, db)
+        connection = sqlite3.connect(db)
+        self.addCleanup(connection.close)
+        self.assertEqual(("Fail", 2, 1), connection.execute(
+            "SELECT verdict, api_calls, error_calls FROM runs").fetchone())
+
+    def test_missing_backend_is_skipped_not_zero(self):
+        driver = _FakeDriver(["ok"])
+        with patch.object(driver, "collect_usage", return_value=UsageCollection(
+            notes=("NewAPI 未采集",), samples=(UsageSample(source="session-jsonl"),),
+        )):
+            record = run_batch(items(1), driver=driver,
+                options=replace(self.options, collect_usage=True))[0]
+        self.assertEqual(Verdict.PASS, record.verdict)
+        self.assertIsNone(record.log_stats.error_calls)
+        self.assertIsNone(next(c for c in record.checks if c.name == "error-calls").verdict)
+
+    def test_no_usage_flag_skips_collection(self):
+        driver = _FakeDriver(["ok"])
+        with patch.object(driver, "collect_usage") as collect:
+            run_batch(items(1), driver=driver, options=self.options)
+        collect.assert_not_called()
 
 
 if __name__ == "__main__":

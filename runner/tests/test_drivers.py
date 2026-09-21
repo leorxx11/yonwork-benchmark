@@ -5,12 +5,15 @@ import subprocess
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from runner.drivers import DriverError, DriverSpec, build_driver
 from runner.drivers.workbuddy import WorkBuddyDriver
 from runner.drivers.yonwork import YonWorkDriver
 from runner.client import ChatError, ChatTimeout
-from runner.models import USAGE_SOURCES, Verdict
+from runner.models import USAGE_SOURCES, ChatTurn, UsageSample, Verdict
+from runner.newapi import NewApiConfig, NewApiError
+from runner.transport import TransportError
 from runner.assertions import evaluate
 from runner.models import Expectations
 
@@ -93,6 +96,27 @@ class RegistryTests(unittest.TestCase):
 
 
 class YonWorkDriverTests(unittest.TestCase):
+    def test_backend_failure_preserves_other_sources_and_redacts_error_text(self):
+        for error in (NewApiError("secret-token"), TransportError("secret-token")):
+            with self.subTest(error=type(error).__name__):
+                driver = YonWorkDriver(usage_settle_seconds=0)
+                driver._uses_newapi = True
+                turn = ChatTurn("b1", "b1", "hi", "", "", 1)
+                with patch.object(driver, "_device_usage", return_value=None), \
+                     patch.object(driver, "_session_usage", return_value=UsageSample(source="session-jsonl")), \
+                     patch("runner.drivers.yonwork.NewApiConfig.load", return_value=NewApiConfig()), \
+                     patch("runner.drivers.yonwork.collect_turn_logs", side_effect=error):
+                    result = driver.collect_usage(turn)
+                self.assertEqual(["session-jsonl"], [s.source for s in result.samples])
+                self.assertEqual(1, len(result.notes))
+                self.assertNotIn("secret-token", result.notes[0])
+
+    def test_default_route_does_not_query_newapi(self):
+        driver = YonWorkDriver()
+        with patch("runner.drivers.yonwork.NewApiConfig.load") as config:
+            self.assertIsNone(driver._backend_usage(ChatTurn("b1", "b1", "hi", "", "", 1)))
+        config.assert_not_called()
+
     def test_session_key_is_lowercase_and_unique_per_round(self) -> None:
         driver = YonWorkDriver()
         first = driver.session_key("Bench-Case01-r1-abc")

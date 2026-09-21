@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="单轮超时（秒）",
     )
     parser.add_argument("--limit", type=int, default=0, help="只跑前 N 轮，0 表示不限")
-    parser.add_argument("--no-usage", action="store_true", help="不采集端上 token 用量")
+    parser.add_argument("--no-usage", action="store_true", help="不采集用量和后台调用统计")
     parser.add_argument("--no-xlsx", action="store_true", help="只出 JSONL + SQLite")
     parser.add_argument(
         "--no-transcript", action="store_true", help="不保存每轮的 SSE 原始流"

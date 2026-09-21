@@ -106,7 +106,10 @@ def run_one(
         if usage is not None:
             break
 
-    log_stats = log_stats_from_usage(usage, turn)
+    # token 的来源优先级不等于调用计数来源优先级：端上 token 存在时，
+    # 也必须让后台错误计数参与本轮判定。
+    log_sample = next((sample for sample in samples if sample.source == "newapi"), usage)
+    log_stats = log_stats_from_usage(log_sample, turn)
     evaluation = evaluate(
         turn=turn,
         expectations=item.expectations,

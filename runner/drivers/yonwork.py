@@ -16,6 +16,7 @@ from ..discovery import (
     session_status,
 )
 from ..models import ChatTurn, UsageSample
+from ..newapi import NewApiConfig, NewApiError, collect_turn_logs
 from ..sessionlog import SessionLogError, collect_one
 from ..transport import TransportError
 from ..usage import DEFAULT_SETTLE_SECONDS, fetch_recent_token_history, match_usage
@@ -47,6 +48,7 @@ class YonWorkDriver:
         self.usage_settle_seconds = usage_settle_seconds
         self.endpoint: HostEndpoint | None = None
         self._client: ChatClient | None = None
+        self._uses_newapi = False
 
     def preflight(self) -> Iterator[str]:
         try:
@@ -80,6 +82,10 @@ class YonWorkDriver:
             yield "未指定模型，用智能体当前的默认模型"
 
         self.endpoint = endpoint
+        # 本项目通过名为 newapi 的模型配置访问网关；指定其它模型不代表经过它。
+        self._uses_newapi = bool(
+            model_choice and model_choice.display_name.casefold() == "newapi"
+        )
         self._client = ChatClient(
             endpoint,
             agent_id=self.agent_id,
@@ -100,7 +106,7 @@ class YonWorkDriver:
         )
 
     def collect_usage(self, turn: ChatTurn) -> UsageCollection:
-        """端上 HTTP + 会话 JSONL 两路都采，一路失败不影响另一路。
+        """端上 HTTP、会话 JSONL、NewAPI 分别采，一路失败不影响另一路。
 
         端上端点实测在漏记（CLAUDE.md 六-3），默认模型那几轮全靠会话 JSONL
         才有数——所以这两路是互为兜底的两端，不是重复。
@@ -110,17 +116,28 @@ class YonWorkDriver:
         for label, collect in (
             ("端上用量", lambda: self._device_usage(turn)),
             ("会话日志", lambda: self._session_usage(turn)),
+            ("NewAPI 日志", lambda: self._backend_usage(turn)),
         ):
             try:
                 sample = collect()
-            except (TransportError, SessionLogError) as exc:
+            except (TransportError, SessionLogError, NewApiError, ValueError, TypeError) as exc:
                 # 采不到不改变本轮的产品判定，只记一笔：
                 # 「没采到」和「产品出错」是两回事，混了统计就脏了。
-                notes.append(f"{label}采集失败：{exc}")
+                # 后台错误正文可能含上游地址/凭据，不写进报告。
+                detail = type(exc).__name__ if label == "NewAPI 日志" else str(exc)
+                notes.append(f"{label}采集失败：{detail}")
                 continue
             if sample is not None:
                 samples.append(sample)
+            elif label == "NewAPI 日志" and self._uses_newapi:
+                notes.append("NewAPI 未匹配到本轮日志，调用统计仍为未采集")
         return UsageCollection(samples=tuple(samples), notes=tuple(notes))
+
+    def _backend_usage(self, turn: ChatTurn) -> UsageSample | None:
+        if not self._uses_newapi:
+            return None
+        config = NewApiConfig.load()
+        return collect_turn_logs(config, turn, token_name=config.token_name)
 
     def close(self) -> None:
         self._client = None

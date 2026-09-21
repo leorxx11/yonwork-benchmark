@@ -71,6 +71,7 @@ services:
       NEWAPI_BASE_URL: http://127.0.0.1:${NEWAPI_PORT:-3000}
       NEWAPI_USER_ID: ${NEWAPI_USER_ID:-1}
       NEWAPI_ACCESS_TOKEN: ${NEWAPI_ACCESS_TOKEN:-}
+      NEWAPI_TOKEN_NAME: ${NEWAPI_TOKEN_NAME:-}
       NO_PROXY: "*"
       no_proxy: "*"
     volumes: &benchmark-volumes

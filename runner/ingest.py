@@ -90,6 +90,11 @@ def _usage_rows(record: JsonObject) -> list[tuple[Any, ...]]:
 
 
 def _usage_row(record: JsonObject, usage: JsonObject, stats: Any) -> tuple[Any, ...]:
+    # 计数属于各自来源，不能把 NewAPI 的 ErrorCalls 复制到端上/会话用量行。
+    source = usage.get("source") or DEVICE_SOURCE
+    legacy_stats = stats if isinstance(stats, dict) and stats.get("source") in (
+        source, "recent-token-history" if source == DEVICE_SOURCE else source,
+    ) else {}
     return (
         record.get("benchmark_id"),
         usage.get("source") or DEVICE_SOURCE,
@@ -101,8 +106,8 @@ def _usage_row(record: JsonObject, usage: JsonObject, stats: Any) -> tuple[Any, 
         usage.get("cache_read_tokens"),
         usage.get("cache_write_tokens"),
         usage.get("cost_usd"),
-        stats.get("api_calls") if isinstance(stats, dict) else None,
-        stats.get("error_calls") if isinstance(stats, dict) else None,
+        usage.get("api_calls", legacy_stats.get("api_calls")),
+        usage.get("error_calls", legacy_stats.get("error_calls")),
         usage.get("match", "none"),
         to_utc(usage.get("timestamp")),
         json.dumps(usage, ensure_ascii=False),

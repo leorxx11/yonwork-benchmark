@@ -98,7 +98,7 @@ case_sets:
 | 通路 | 常驻 Host API + SSE | 每轮一个一次性进程 + JSON |
 | 隔离 | 全新 `sessionKey`（全小写） | 全新 `--session-id` + `--no-session-persistence` |
 | 终止 | `chat.complete` / `state:"final"` | 最后一条 `type:"result"` |
-| 用量 | 事后采两个来源 | 随本轮输出一起回来，按 session-id 精确匹配 |
+| 用量 | 逐轮采端上、会话 JSONL、NewAPI | 随本轮输出一起回来，按 session-id 精确匹配 |
 
 所以接口里没有「端点」「SSE」「进程」这些只有一边成立的概念，只有
 `preflight` / `session_key` / `run_turn` / `collect_usage` / `close`。
@@ -135,6 +135,29 @@ case_sets:
 | `device-api` | 时间窗 + 答案文本 | 全部模式，但实测存在漏记 |
 
 一个来源一条 `UsageSample`，缺失就是未采集，不用 0 冒充。断言按既定来源顺序选择数据。
+
+## 跑批时采集 ErrorCalls
+
+YonWork 显式选择显示名为 `newapi` 的模型时，在每轮判定和 JSONL 落盘前查询后台日志。
+CLI 用 `--model newapi`，Web 选择同名模型；默认模型、其它显示名和 WorkBuddy 不查询这一路。
+需要已有 `NEWAPI_ACCESS_TOKEN`；可用 `NEWAPI_TOKEN_NAME` 限定网关令牌名。
+`--no-usage` 或 Web 关闭用量采集会一并关闭逐轮日志采集。
+
+消费日志与错误日志都计入 APICalls，错误日志单独计入 ErrorCalls。重试后回答成功但
+`ErrorCalls > 0` 仍由日志断言判 Fail，结果同时进入 JSONL、SQLite、XLSX 和 Web 报告。
+token 仍按原有来源优先级选择，调用统计优先采用 NewAPI 实采值。
+缺配置、查询失败、日志为空时，ErrorCalls 保持 `None`，对应检查显示未采集；
+空查询不能证明 APICalls 为 0，不能据此把本轮判 Invalid。
+
+匹配使用本轮起止时间（UTC 秒）和请求模型，不扩展事后对账的 ±15 秒窗口。
+在端上用量采样等待后查询 3 次，间隔 1 秒，采用最后一次完整查询结果，保存日志摘要；
+接口会重新编号 id，所以不跨查询合并或按 id 去重，也不保存后台错误正文。
+分页期间总数变化时采集作废，保持未采集。耗时指标仍取模型轮次本身，不含采集等待。
+使用前提是串行执行、被测令牌无其它并发流量；这仍是时间窗关联，并非 runId 精确关联。
+超过补采窗口才落库的日志可能遗漏，默认路由和后台日志未覆盖的错误也不在此统计内。
+
+入库按来源保存计数，后台 ErrorCalls 不会复制到端上或会话来源。事后 `reconcile`
+可以补缺失用量，但不覆盖已经参与逐轮判定的 NewAPI 样本，也不会重算历史判定。
 
 ## 测试
 

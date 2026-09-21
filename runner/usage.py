@@ -104,13 +104,15 @@ def match_usage(rows: list[JsonObject], turn: ChatTurn) -> UsageSample | None:
 
 
 def log_stats_from_usage(sample: UsageSample | None, turn: ChatTurn | None) -> LogStats:
-    """把端上用量折算成第三层断言要的 APICalls / ErrorCalls。
+    """优先使用后台实采计数；其它来源只提供请求发生的有限证据。
 
-    ErrorCalls 端上拿不到，只能留 None（等 newapi_stats.ps1 对账那条待办补齐，
-    见 CLAUDE.md 七-4）。用 0 冒充会把「没采到」说成「没出错」。
+    ErrorCalls 端上拿不到，只能留 None。用 0 冒充会把「没采到」说成「没出错」。
     """
     if sample is not None:
-        return LogStats(api_calls=1, error_calls=None, source="recent-token-history")
+        return LogStats(
+            api_calls=sample.api_calls if sample.api_calls is not None else 1,
+            error_calls=sample.error_calls, source=sample.source,
+        )
     if turn is not None and turn.run_id:
         # 拿到了 runId 说明请求确实到了 API，只是用量还没落盘。
         return LogStats(api_calls=1, error_calls=None, source="sse:run-id")

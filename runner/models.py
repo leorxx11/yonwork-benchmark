@@ -174,6 +174,9 @@ class UsageSample:
     session_id: str | None = None
     timestamp: str | None = None
     match: str = "none"  # 怎么匹配上的：idempotency-key（精确）/ time-window / none
+    api_calls: int | None = None
+    error_calls: int | None = None
+    log_entries: tuple[JsonObject, ...] = ()  # 后台证据摘要，不保存可能含凭据的错误正文
 
 
 @dataclass(frozen=True, slots=True)

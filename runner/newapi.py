@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -9,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .db import load_env_file, project_root
-from .models import JsonObject
+from .db import load_env_file, project_root, to_utc
+from .models import ChatTurn, JsonObject, UsageSample
 from .transport import TransportError, build_opener
 
 
@@ -35,6 +36,7 @@ class NewApiConfig:
     base_url: str = "http://127.0.0.1:3000"
     token: str = field(default="", repr=False)
     user_id: str = "1"
+    token_name: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> "NewApiConfig":
@@ -56,6 +58,7 @@ class NewApiConfig:
             base_url=values.get("NEWAPI_BASE_URL", "http://127.0.0.1:3000").rstrip("/"),
             token=token,
             user_id=values.get("NEWAPI_USER_ID", "1"),
+            token_name=values.get("NEWAPI_TOKEN_NAME", ""),
         )
 
 
@@ -67,17 +70,21 @@ def fetch_logs(
     token_name: str = "",
     page_size: int = 100,
     timeout: float = 15.0,
+    slack_seconds: int = MATCH_SLACK_SECONDS,
 ) -> list[JsonObject]:
     """拉一个时间窗内的日志，翻页直到取完。
 
     start/end 传 UTC；NewAPI 存的是 unix 秒，不受时区影响。
     """
     opener = build_opener()
-    start_ts = int(start.replace(tzinfo=timezone.utc).timestamp()) - MATCH_SLACK_SECONDS
-    end_ts = int(end.replace(tzinfo=timezone.utc).timestamp()) + MATCH_SLACK_SECONDS
+    start = start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start
+    end = end.replace(tzinfo=timezone.utc) if end.tzinfo is None else end
+    start_ts = int(start.timestamp()) - slack_seconds
+    end_ts = int(end.timestamp()) + slack_seconds
 
     items: list[JsonObject] = []
     page = 1
+    expected_total: int | None = None
     while True:
         url = (
             f"{config.base_url}{LOG_PATH}?p={page}&page_size={page_size}"
@@ -98,15 +105,85 @@ def fetch_logs(
         except Exception as exc:  # noqa: BLE001 —— 网络/解析问题统一归到一类
             raise TransportError(f"NewAPI {LOG_PATH} 请求失败：{exc}") from exc
 
+        if not isinstance(payload, dict):
+            raise NewApiError("NewAPI 日志响应不是对象")
         if not payload.get("success"):
             raise NewApiError(f"NewAPI 查询失败：{payload.get('message')}")
-        data = payload.get("data") or {}
-        batch = [item for item in (data.get("items") or []) if isinstance(item, dict)]
+        data = payload.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            raise NewApiError("NewAPI 日志响应缺少 data.items，不能当作空日志")
+        batch = data["items"]
+        if any(not isinstance(item, dict) for item in batch):
+            raise NewApiError("NewAPI 日志包含无效记录")
+        total = data.get("total")
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            raise NewApiError("NewAPI 日志响应缺少有效 total，无法确认分页完整")
+        if expected_total is not None and total != expected_total:
+            raise NewApiError("NewAPI 日志在翻页期间发生变化，无法确认完整快照")
+        expected_total = total
         items.extend(batch)
-        if not batch or len(items) >= int(data.get("total") or 0):
+        if not batch and len(items) < total:
+            raise NewApiError("NewAPI 日志分页提前结束")
+        if len(items) >= total:
             break
         page += 1
     return items
+
+
+def collect_turn_logs(
+    config: NewApiConfig,
+    turn: ChatTurn,
+    *,
+    token_name: str = "",
+    attempts: int = 3,
+    settle_seconds: float = 1.0,
+) -> UsageSample | None:
+    """在判定前采一轮后台日志；严格使用本轮时间窗，不带事后对账的 ±15s。
+
+    NewAPI 时间戳精度为秒。串行跑批且同一 token 没有其它流量是匹配前提。
+    空查询不能证明请求未发生（默认路由/日志延迟/漏记），所以返回 None。
+    即使已看到消费日志也继续短暂补采，避免漏掉稍后落库的重试错误。
+    """
+    start, end = to_utc(turn.started_at), to_utc(turn.ended_at)
+    if start is None or end is None or end < start or not turn.requested_model:
+        raise NewApiError("本轮缺少有效时间窗或请求模型，无法匹配后台日志")
+    low = int(start.replace(tzinfo=timezone.utc).timestamp())
+    high = int(end.replace(tzinfo=timezone.utc).timestamp())
+    rows: list[JsonObject] = []
+    for attempt in range(max(1, attempts)):
+        if attempt and settle_seconds > 0:
+            time.sleep(settle_seconds)
+        # /api/log/self 会将 id 重编为查询结果序号，绝不能跨快照按 id 合并。
+        # 每次完整取样替换上一次；保留同秒同内容的多条真实调用。
+        rows = []
+        for row in fetch_logs(config, start, end, token_name=token_name, slack_seconds=0):
+            if row.get("type") not in (TYPE_CONSUME, TYPE_ERROR):
+                continue
+            stamp = row.get("created_at")
+            if not isinstance(stamp, (int, float)):
+                raise NewApiError("NewAPI 日志缺少 created_at")
+            if not low <= stamp <= high or row.get("model_name") != turn.requested_model:
+                continue
+            if token_name and row.get("token_name") != token_name:
+                continue
+            rows.append(row)
+    if not rows:
+        return None
+    # 已经收紧到本轮窗内，复用现有消费/错误计数口径。
+    samples, _ = match_logs(rows, [{
+        "benchmark_id": turn.benchmark_id, "started_at": start, "ended_at": end,
+    }])
+    sample = samples[0]
+    return UsageSample(
+        source="newapi", input_tokens=sample.input_tokens,
+        output_tokens=sample.output_tokens, total_tokens=sample.total_tokens,
+        model=sample.model, timestamp=sample.sampled_at.replace(tzinfo=timezone.utc).isoformat(),
+        match="time-window+model", api_calls=sample.api_calls,
+        error_calls=sample.error_calls,
+        log_entries=tuple({key: row.get(key) for key in (
+            "created_at", "type", "model_name", "prompt_tokens", "completion_tokens",
+        )} for row in rows),
+    )
 
 
 @dataclass(frozen=True, slots=True)
