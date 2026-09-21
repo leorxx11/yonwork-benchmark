@@ -123,13 +123,37 @@
     obs2.observe(composer, { subtree: true, childList: true, attributes: true });
   }
 
-  window.__probeStop = () => { obs.disconnect(); if (obs2) obs2.disconnect(); };
+  // Long Task = 主线程被阻塞 >50ms 的片段。
+  // ⚠️ **这是绝对量，不像滞后那样靠相减抵消**（CLAUDE.md 七-2.6），
+  // 所以它单独记，用来回答「渲染到底有没有把主线程卡住」——
+  // 滞后大可能是后端慢，但 Long Task 多只可能是客户端自己的事。
+  let taskObs = null;
+  let longTaskSupported = false;
+  try {
+    taskObs = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        emit("longtask", { ms: Math.round(entry.duration) });
+      }
+    });
+    taskObs.observe({ entryTypes: ["longtask"] });
+    longTaskSupported = true;
+  } catch (err) {
+    // 不支持就让它是 null。用 0 冒充等于把「没测」说成「没卡顿」。
+    taskObs = null;
+  }
+
+  window.__probeStop = () => {
+    obs.disconnect();
+    if (obs2) obs2.disconnect();
+    if (taskObs) taskObs.disconnect();
+  };
   state.t0 = performance.now();
   emit("t0", {
     baseline: state.baseline,
     stage: stage === document.body ? "body(fallback)" : STAGE,
     chatRootPresent: !!document.querySelector(CHAT_ROOT),
     composerFound: !!composer,
+    longTaskSupported: longTaskSupported,
     promptHead: PROMPT_HEAD,
   });
   return "ok";

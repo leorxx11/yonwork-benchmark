@@ -41,6 +41,12 @@ class ProbeRecord:
     generation_done_ms: float | None = None    # T5：界面「正在生成」消失，确定性信号
     text_updates: int = 0
     answer_chars: int | None = None
+    # Long Task：主线程被阻塞 >50ms 的片段。**绝对量，不靠相减抵消**，
+    # 所以样本波动不会自己消掉，报的时候要给区间。
+    # None = 这个 renderer 不支持 PerformanceObserver('longtask')，
+    # **不是 0**——用 0 冒充等于把「没测」说成「没卡顿」。
+    long_task_count: int | None = None
+    long_task_max_ms: int | None = None
     # ---- Host API 侧，只用时长 ----
     backend_first_delta_ms: float | None = None
     backend_duration_ms: float | None = None
@@ -103,6 +109,12 @@ def _apply_ui(record: ProbeRecord, events: list[dict[str, Any]], origin: float) 
     if updates:
         record.last_change_ms = round(updates[-1]["t"] - origin, 1)
         record.answer_chars = updates[-1].get("chars")
+
+    installed = next((event for event in events if event.get("name") == "t0"), {})
+    if installed.get("longTaskSupported"):
+        tasks = [event.get("ms", 0) for event in events if event.get("name") == "longtask"]
+        record.long_task_count = len(tasks)
+        record.long_task_max_ms = max(tasks) if tasks else 0
 
 
 def _self_check(record: ProbeRecord) -> None:
