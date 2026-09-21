@@ -126,6 +126,9 @@
 
   <label class="check"><input type="checkbox" name="collect_usage" checked> 采集 token 用量（关掉会快一些，但成本层断言全部跳过）</label>
   <label class="check"><input type="checkbox" name="export_xlsx" checked> 额外导出一份结果 Excel</label>
+  {# 只有 WorkBuddy 真的消费它。YonWork 的工具由智能体配置决定，我们这边关不掉，
+     所以这里写清楚「对谁有效」，否则会被当成一个全局开关。 #}
+  <label class="check"><input type="checkbox" name="allow_tools"> 允许调用工具（<strong>只对 WorkBuddy 有效</strong>；YonWork 的工具由智能体配置决定，不受这里控制）</label>
 
   <div class="actions">
     <button class="primary" type="submit" {% if not case_sets %}disabled{% endif %}>

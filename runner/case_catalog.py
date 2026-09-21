@@ -142,6 +142,7 @@ def _expectations(value: Any, where: str) -> Expectations:
             "max_seconds",
             "max_total_tokens",
             "max_input_tokens",
+            "min_tool_calls",
         },
         where,
     )
@@ -162,6 +163,9 @@ def _expectations(value: Any, where: str) -> Expectations:
         ),
         max_input_tokens=_optional_int(
             raw.get("max_input_tokens"), f"{where}.max_input_tokens"
+        ),
+        min_tool_calls=_optional_int(
+            raw.get("min_tool_calls"), f"{where}.min_tool_calls"
         ),
     )
 

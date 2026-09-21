@@ -56,6 +56,10 @@ class _FakeDriver:
     def collect_usage(self, turn: ChatTurn) -> UsageCollection:
         return UsageCollection()
 
+    def enrich(self, turn):
+        # 协议要求有这个方法。桩不补原材料，原样返回。
+        return turn
+
     def close(self) -> None:
         return None
 

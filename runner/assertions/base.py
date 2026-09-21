@@ -49,7 +49,7 @@ def evaluate(
     """
     checks: list[Check] = []
     checks.extend(check_completion(turn, failure))
-    checks.extend(check_artifacts(turn))
+    checks.extend(check_artifacts(turn, expectations))
     checks.extend(check_logs(log_stats))
     checks.extend(check_content(turn, expectations))
     checks.extend(check_cost(turn, usage, expectations))

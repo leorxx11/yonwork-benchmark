@@ -102,6 +102,54 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(Verdict.FAIL, verdict_of("answer-present", evaluation))
 
 
+class ToolCallTests(unittest.TestCase):
+    """工具调用：不声明只记录，声明了才判，判不过还要分清是谁的问题。"""
+
+    def test_without_a_declaration_it_only_records(self) -> None:
+        # 规矩同 max_input_tokens：没声明就不猜。绝大多数 Case 不关心工具。
+        evaluation = evaluate(turn=make_turn(tool_calls=()), expectations=Expectations())
+        self.assertEqual(Verdict.PASS, verdict_of("tool-calls", evaluation))
+
+    def test_declared_case_with_zero_tool_calls_is_fail(self) -> None:
+        """这条以前恒 PASS，所以「工具用例」跑出 0 次调用照样全绿。
+
+        探针 S5/S6 就是这么把两个普通短文本场景当成
+        「工具场景没问题」的证据的（CLAUDE.md 七-2.5）。
+        """
+        evaluation = evaluate(
+            turn=make_turn(tool_calls=(), tools_enabled=True),
+            expectations=Expectations(min_tool_calls=1),
+        )
+        self.assertEqual(Verdict.FAIL, verdict_of("tool-calls", evaluation))
+        self.assertEqual(Verdict.FAIL, evaluation.verdict)
+
+    def test_tools_switched_off_makes_the_round_invalid_not_failed(self) -> None:
+        """我们自己把工具关了却跑要求用工具的 Case——跑法不对，不是产品的错。
+
+        记成 Fail 等于拿自己的配置错误去算产品的失败率（二-4）。
+        """
+        evaluation = evaluate(
+            turn=make_turn(tool_calls=(), tools_enabled=False),
+            expectations=Expectations(min_tool_calls=1),
+        )
+        self.assertEqual(Verdict.INVALID, verdict_of("tool-calls", evaluation))
+
+    def test_enough_tool_calls_passes(self) -> None:
+        evaluation = evaluate(
+            turn=make_turn(tool_calls=("read_file", "grep"), tools_enabled=True),
+            expectations=Expectations(min_tool_calls=2),
+        )
+        self.assertEqual(Verdict.PASS, verdict_of("tool-calls", evaluation))
+
+    def test_unknown_tool_switch_is_treated_as_the_products_problem(self) -> None:
+        """YonWork 没有工具开关（tools_enabled=None），那就只能算产品没调。"""
+        evaluation = evaluate(
+            turn=make_turn(tool_calls=(), tools_enabled=None),
+            expectations=Expectations(min_tool_calls=1),
+        )
+        self.assertEqual(Verdict.FAIL, verdict_of("tool-calls", evaluation))
+
+
 class LogTests(unittest.TestCase):
     def test_error_calls_above_zero_is_fail(self) -> None:
         checks = check_logs(LogStats(api_calls=3, error_calls=1, source="newapi"))

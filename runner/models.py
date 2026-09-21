@@ -70,6 +70,11 @@ class Expectations:
     # 按 Case 定，不要指望一个全局常数：同一句「你好！」实测 5,514～16,238，
     # 长文本用例同一轮 session-jsonl 记 30,082、NewAPI 记 228,354。
     max_input_tokens: int | None = None
+    # 这个 Case 至少要调几次工具。None = 只记录不判定（默认）。
+    # 声明了才判，规矩同 max_input_tokens——**不声明就不猜**。
+    # 探针 S5/S6 就是栽在这里：以为在测工具场景，实测 tool_calls 全是 0，
+    # 模型压根没调工具，两个普通短文本场景被当成了「工具场景没问题」的证据。
+    min_tool_calls: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +154,11 @@ class ChatTurn:
     tool_calls: tuple[str, ...] = ()
     requested_model: str | None = None  # 请求里指定的 modelId，None = 用智能体默认
     requested_model_label: str | None = None  # 该模型的显示名，四模式视图按它分组
+    # 这一轮**允许**用工具吗。None = 该产品没有这个开关（YonWork 就是，
+    # 工具由智能体配置决定，我们这边关不掉）。
+    # 用来区分「模型自己选择不调工具」（产品的问题 → Fail）和
+    # 「我们把工具关了却跑了个需要工具的 Case」（数据无意义 → Invalid）。
+    tools_enabled: bool | None = None
     stream_error: JsonObject | None = None
     http_status: int | None = None
     transcript_path: str | None = None

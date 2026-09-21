@@ -38,6 +38,11 @@ class SessionUsage:
     assistant_turns: int
     timestamp: str | None
     source_path: str
+    # SSE 里**看不到**工具调用：实测 /api/chat/send 的流只有 text 块，
+    # 而同一轮的会话 JSONL 里有 toolCall / toolResult。
+    # 不从这儿补的话 `turn.tool_calls` 对 YonWork 恒为 0，
+    # 「这个 Case 必须用到工具」的断言会稳定误判成「产品没调工具」。
+    tool_calls: tuple[str, ...] = ()
 
     def as_sample(self) -> UsageSample:
         return UsageSample(
@@ -100,6 +105,27 @@ def iter_session_files(sessions_dir: Path, since: datetime | None = None) -> lis
     return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)
 
 
+def _tool_names(message: dict) -> list[str]:
+    """助手消息里的工具调用块。
+
+    实测块长这样：`{"type": "toolCall", "id": "call_…", "name": "tool_call"}`。
+    宽松匹配 `"tool" in type`，跟 client.extract_tool_names 一个口径——
+    名字取不到就记 `unknown`，**不要丢掉这次调用**，因为断言关心的是次数。
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    names: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if isinstance(kind, str) and "tool" in kind.lower():
+            name = block.get("toolName") or block.get("name")
+            names.append(name if isinstance(name, str) and name else "unknown")
+    return names
+
+
 def _as_int(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
@@ -152,6 +178,7 @@ def parse_session_file(path: Path) -> list[SessionUsage]:
                         "input": 0, "output": 0, "total": 0,
                         "cache_read": 0, "cache_write": 0,
                         "model": None, "provider": None, "turns": 0, "ts": None,
+                        "tools": [],
                     },
                 )
             else:
@@ -161,10 +188,17 @@ def parse_session_file(path: Path) -> list[SessionUsage]:
         if message.get("role") != "assistant" or current is None:
             continue
 
+        bucket = buckets[current]
+        # 工具块和 usage 不在同一条消息上：带 toolCall 的那条助手消息也有 usage，
+        # 但顺序不保证，所以先收工具再判 usage，别被 continue 跳过去。
+        for name in _tool_names(message):
+            bucket_tools = bucket["tools"]
+            assert isinstance(bucket_tools, list)
+            bucket_tools.append(name)
+
         usage = message.get("usage")
         if not isinstance(usage, dict):
             continue
-        bucket = buckets[current]
         bucket["input"] = _as_int(bucket["input"]) + _as_int(usage.get("input"))
         bucket["output"] = _as_int(bucket["output"]) + _as_int(usage.get("output"))
         bucket["total"] = _as_int(bucket["total"]) + _as_int(usage.get("totalTokens"))
@@ -188,6 +222,7 @@ def parse_session_file(path: Path) -> list[SessionUsage]:
             model=bucket["model"] if isinstance(bucket["model"], str) else None,
             provider=bucket["provider"] if isinstance(bucket["provider"], str) else None,
             assistant_turns=_as_int(bucket["turns"]),
+            tool_calls=tuple(bucket["tools"]) if isinstance(bucket["tools"], list) else (),
             timestamp=bucket["ts"] if isinstance(bucket["ts"], str) else None,
             source_path=str(path),
         )

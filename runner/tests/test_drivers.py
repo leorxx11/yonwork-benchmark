@@ -13,6 +13,8 @@ from runner.drivers import DriverError, DriverSpec, build_driver
 from runner.drivers import workbuddy
 from runner.drivers.workbuddy import WorkBuddyDriver
 from runner.drivers.yonwork import YonWorkDriver
+from runner import sessionlog
+from runner.sessionlog import SessionLogError
 from runner.client import ChatError, ChatTimeout
 from runner.models import USAGE_SOURCES, ChatTurn, UsageSample, Verdict
 from runner.newapi import NewApiConfig, NewApiError
@@ -248,6 +250,22 @@ class WorkBuddyParsingTests(unittest.TestCase):
         with self.assertRaises(ChatError):
             driver_with(partial).run_turn(benchmark_id="b1", prompt="hi")
 
+    def test_empty_output_reports_stderr_instead_of_swallowing_it(self) -> None:
+        """只说「没有输出（退出码 0）」的话，CLI 写在 stderr 的原因就丢了。
+
+        2026-09-21 开着工具跑撞到过这个：报错里什么线索都没有，
+        只能手工复现一遍才知道为什么。
+        """
+        def run(_command, _env, _timeout):
+            return SimpleNamespace(stdout="", stderr="tool registry unavailable", returncode=0)
+
+        driver = WorkBuddyDriver(runner=run)
+        driver._home = Path("/tmp/workbuddy")
+        driver._config_dir = Path("/tmp/.workbuddy")
+        with self.assertRaises(ChatError) as caught:
+            driver.run_turn(benchmark_id="b1", prompt="hi")
+        self.assertIn("tool registry unavailable", str(caught.exception))
+
     def test_exit_code_zero_is_not_enough(self) -> None:
         """报告实测：无效模型时退出码同样是 0，所以不能拿它当判据。"""
         with self.assertRaises(ChatError):
@@ -281,6 +299,17 @@ class WorkBuddyCommandTests(unittest.TestCase):
         self.assertEqual("", command[command.index("--tools") + 1])
         self.assertNotIn("--tools", driver_with(PROBE_STDOUT, allow_tools=True)._command("b1", "hi"))
 
+    def test_enabling_tools_raises_max_turns(self) -> None:
+        """1 轮只够直接作答。开了工具就必然不够：调工具一轮、作答又一轮。
+
+        2026-09-21 实测这个组合的症状极难查——CLI 以
+        `Max turns (1) exceeded` 收场，stdout 空白，**退出码仍是 0**。
+        """
+        off = driver_with(PROBE_STDOUT)._command("b1", "hi")
+        on = driver_with(PROBE_STDOUT, allow_tools=True)._command("b1", "hi")
+        self.assertEqual("1", off[off.index("--max-turns") + 1])
+        self.assertGreater(int(on[on.index("--max-turns") + 1]), 1)
+
     def test_wslenv_lists_every_variable_and_marks_the_paths(self) -> None:
         """WSLENV 漏掉一个变量，目标进程里就是 undefined，而且不报错。
 
@@ -291,6 +320,64 @@ class WorkBuddyCommandTests(unittest.TestCase):
         self.assertEqual(set(env) - {"WSLENV"}, declared)
         self.assertIn("CODEBUDDY_CONFIG_DIR/p", env["WSLENV"])
         self.assertIn("ELECTRON_RUN_AS_NODE", env["WSLENV"].split(":"))
+
+
+class ToolCallVisibilityTests(unittest.TestCase):
+    """YonWork 的 SSE 看不到工具调用，必须从会话 JSONL 补。
+
+    2026-09-21 实测同一轮：SSE 的 content 块**全是 text**，
+    而会话 JSONL 里有 `{"type":"toolCall"}` + `toolResult`。
+    不补的话 `tool_calls` 恒为 0，「这个 Case 必须用到工具」的断言
+    会稳定误判成「产品没调工具」——把观测盲区算成产品失败。
+    """
+
+    @staticmethod
+    def _turn(tool_calls=()):
+        return ChatTurn(
+            "b1", "agent:main:b1", "p",
+            "2026-09-21T00:00:00Z", "2026-09-21T00:00:03Z", 3.0,
+            tool_calls=tool_calls,
+        )
+
+    def test_tool_calls_are_backfilled_from_the_session_log(self) -> None:
+        found = SimpleNamespace(tool_calls=("read_dir",))
+        with patch("runner.drivers.yonwork.collect_one", return_value=found):
+            turn = YonWorkDriver().enrich(self._turn())
+        self.assertEqual(("read_dir",), turn.tool_calls)
+
+    def test_sse_wins_when_it_actually_reports_tools(self) -> None:
+        """主通路给了就以它为准，别拿第二来源覆盖。"""
+        with patch("runner.drivers.yonwork.collect_one") as collect:
+            turn = YonWorkDriver().enrich(self._turn(("from_sse",)))
+        collect.assert_not_called()
+        self.assertEqual(("from_sse",), turn.tool_calls)
+
+    def test_backfill_failure_leaves_the_turn_untouched(self) -> None:
+        """补采失败不改变本轮判定，和用量那三路一个规矩。"""
+        with patch(
+            "runner.drivers.yonwork.collect_one",
+            side_effect=SessionLogError("会话文件读不了"),
+        ):
+            turn = YonWorkDriver().enrich(self._turn())
+        self.assertEqual((), turn.tool_calls)
+
+    def test_nothing_found_is_not_invented(self) -> None:
+        with patch("runner.drivers.yonwork.collect_one", return_value=None):
+            self.assertEqual((), YonWorkDriver().enrich(self._turn()).tool_calls)
+
+    def test_session_log_parses_the_real_tool_call_shape(self) -> None:
+        """实测的块形状：{"type": "toolCall", "id": "call_…", "name": "tool_call"}。"""
+        self.assertEqual(
+            ["tool_call"],
+            sessionlog._tool_names(
+                {"content": [{"type": "toolCall", "id": "call_x", "name": "tool_call"}]}
+            ),
+        )
+        # 名字取不到也要记一次，断言关心的是次数
+        self.assertEqual(
+            ["unknown"], sessionlog._tool_names({"content": [{"type": "tool_use"}]})
+        )
+        self.assertEqual([], sessionlog._tool_names({"content": [{"type": "text"}]}))
 
 
 class WorkBuddyPreflightTests(unittest.TestCase):

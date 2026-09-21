@@ -19,6 +19,28 @@ case_sets:
         assertions:
           min_length: 1
 
+  - id: tools
+    name: 工具调用
+    description: >-
+      验证「模型真的调了工具」，不是「答案看起来像调过工具」。
+      **`min_tool_calls` 是这组用例的重点**：不声明的话，模型一次工具都不调、
+      直接凭记忆编一个答案，五层断言照样全绿——探针 S5/S6 就是这么
+      把两个普通短文本场景当成「工具场景没问题」的证据的（CLAUDE.md 七-2.5）。
+      ⚠️ 跑 WorkBuddy 时必须开「允许调用工具」，否则驱动传 `--tools ''`，
+      这一组会判 Invalid（跑法不对，不是产品的错）而不是 Fail。
+    cases:
+      # 刻意选一个**不能靠记忆回答**的问题：当前目录的内容只有真的去看才知道。
+      # 「北京天气」那种题模型可以编一个像样的答案，断言分不出真假。
+      - id: Case01
+        prompt: >-
+          列出当前工作目录下的文件和子目录，然后告诉我一共有多少项。
+          必须实际查看目录，不要凭猜测回答；如果无法访问文件系统，请直接说明。
+        runs: 2
+        enabled: true
+        assertions:
+          min_tool_calls: 1
+          min_length: 10
+
   - id: long-text
     name: 长文本文件检索
     description: 读取本地《西游记》并验证长文本检索；文件的 Windows 路径由环境变量提供。

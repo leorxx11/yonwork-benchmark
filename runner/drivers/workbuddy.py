@@ -30,8 +30,15 @@ BASE_ARGS = (
     "--strict-mcp-config",
     "--no-plugin-management",
     "--permission-mode", "dontAsk",
-    "--max-turns", "1",
 )
+
+# `--max-turns` 不能写死 1。1 轮只够模型直接回答；**开了工具就必然不够**——
+# 调工具算一轮、拿到结果再答又一轮，于是 CLI 以
+# `Max turns (1) exceeded` 收场、stdout 空白、退出码仍是 0
+# （2026-09-21 实测，也正是这个组合第一次跑不通的原因）。
+# 关工具时保持 1：纯文本基准要的就是「一问一答，不给它多轮发挥的机会」。
+TURNS_WITHOUT_TOOLS = 1
+TURNS_WITH_TOOLS = 8
 
 # 传给 Windows 进程的环境。值里带路径的要在 WSLENV 里加 `/p` 后缀做路径转换。
 # WSLENV 从这张表生成，不手写——手写的那份一旦漏掉新变量，
@@ -173,8 +180,10 @@ class WorkBuddyDriver:
         self._config_dir = config_dir
         yield f"WorkBuddy：{home}（配置 {config_dir}）"
         yield f"指定模型：{self.model_query}" if self.model_query else "未指定模型，用产品默认"
-        if not self.allow_tools:
-            yield "已关闭工具（--tools ''），纯文本基准"
+        if self.allow_tools:
+            yield f"已允许工具，--max-turns {TURNS_WITH_TOOLS}（1 轮不够：调工具和作答各占一轮）"
+        else:
+            yield f"已关闭工具（--tools ''），纯文本基准，--max-turns {TURNS_WITHOUT_TOOLS}"
 
     def session_key(self, benchmark_id: str) -> str:
         """直接用 BenchmarkId 当 `--session-id`。
@@ -199,7 +208,10 @@ class WorkBuddyDriver:
 
         duration = round(time.monotonic() - started, 3)
         transcript_path = self._save_transcript(benchmark_id, completed.stdout)
-        records = _parse_stdout(completed.stdout, benchmark_id, completed.returncode)
+        records = _parse_stdout(
+            completed.stdout, benchmark_id, completed.returncode,
+            getattr(completed, "stderr", "") or "",
+        )
         turn, sample = _build_turn(
             benchmark_id=benchmark_id,
             session_key=self.session_key(benchmark_id),
@@ -208,6 +220,7 @@ class WorkBuddyDriver:
             duration=duration,
             records=records,
             requested_model=self._requested_model(),
+            tools_enabled=self.allow_tools,
             transcript_path=transcript_path,
         )
         if sample is not None:
@@ -222,6 +235,10 @@ class WorkBuddyDriver:
         """
         sample = self._usage.pop(turn.benchmark_id, None)
         return UsageCollection(samples=(sample,) if sample is not None else ())
+
+    def enrich(self, turn: ChatTurn) -> ChatTurn:
+        """CLI 的 JSON 输出里工具调用本来就齐全，没有第二来源要补。"""
+        return turn
 
     def close(self) -> None:
         return None
@@ -238,7 +255,9 @@ class WorkBuddyDriver:
         assert self._home is not None
         cli = "\\".join((str(self._home).replace("/mnt/d", "D:"), "resources",
                          "app.asar.unpacked", "cli", "bin", "codebuddy"))
+        turns = TURNS_WITH_TOOLS if self.allow_tools else TURNS_WITHOUT_TOOLS
         command = [str(self._home / "WorkBuddy.exe"), cli, *BASE_ARGS]
+        command += ["--max-turns", str(turns)]
         if not self.allow_tools:
             # 纯文本基准不让模型自己读写文件或执行命令。
             # 真要评测工具能力，应给那个 case 单独开，而不是全局放开。
@@ -275,6 +294,19 @@ class WorkBuddyDriver:
         return str(path)
 
 
+# stderr 可能很长（栈、进度条），截断后再进报告；太长会把任务日志刷爆。
+_STDERR_CHARS = 400
+
+
+def _stderr_hint(stderr: str) -> str:
+    text = (stderr or "").strip()
+    if not text:
+        return ""
+    if len(text) > _STDERR_CHARS:
+        text = text[:_STDERR_CHARS] + "…"
+    return f"；stderr：{text}"
+
+
 def _run_process(command: list[str], env: dict[str, str], timeout: float) -> Any:
     return subprocess.run(
         command,
@@ -286,20 +318,28 @@ def _run_process(command: list[str], env: dict[str, str], timeout: float) -> Any
     )
 
 
-def _parse_stdout(stdout: str, benchmark_id: str, returncode: int) -> list[JsonObject]:
+def _parse_stdout(
+    stdout: str, benchmark_id: str, returncode: int, stderr: str = ""
+) -> list[JsonObject]:
     """stdout 应当是一个 JSON 数组。
 
     **退出码不能当判据**：报告实测无效模型时退出码同样是 0。
     所以这里只在「压根解析不出来」时才认定驱动失败。
+
+    失败时把 stderr 带上——原来只说「没有输出（退出码 0）」，
+    CLI 明明在 stderr 里写了原因却被丢掉，等于每次都要手工复现一遍才知道为什么。
     """
     text = (stdout or "").strip()
+    hint = _stderr_hint(stderr)
     if not text:
-        raise ChatError(f"{benchmark_id}: WorkBuddy CLI 没有输出（退出码 {returncode}）")
+        raise ChatError(
+            f"{benchmark_id}: WorkBuddy CLI 没有输出（退出码 {returncode}）{hint}"
+        )
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ChatError(
-            f"{benchmark_id}: WorkBuddy CLI 输出不是 JSON（退出码 {returncode}）：{exc}"
+            f"{benchmark_id}: WorkBuddy CLI 输出不是 JSON（退出码 {returncode}）：{exc}{hint}"
         ) from exc
     if isinstance(payload, dict):
         payload = [payload]
@@ -317,6 +357,7 @@ def _build_turn(
     duration: float,
     records: list[JsonObject],
     requested_model: str | None,
+    tools_enabled: bool,
     transcript_path: str | None,
 ) -> tuple[ChatTurn, UsageSample | None]:
     """把 CLI 的记录数组摊平成 ChatTurn。**这里只搬运，不判定。**
@@ -385,6 +426,7 @@ def _build_turn(
         tool_calls=tuple(tool_calls),
         requested_model=requested_model,
         requested_model_label=requested_model,
+        tools_enabled=tools_enabled,
         transcript_path=transcript_path,
     )
     return turn, _usage_sample(result, provider_usage, actual_model)

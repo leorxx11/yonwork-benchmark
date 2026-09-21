@@ -41,6 +41,12 @@ class DriverSpec:
     model_query: str = ""
     timeout_seconds: float = 600.0
     transcript_dir: Path | None = None
+    # 允许被测产品调用工具。**批次级，不是 Case 级**——
+    # 驱动一个批次只构造一次，而且 YonWork 根本没有这个开关
+    # （工具由智能体配置决定）。所以这是「这一批让不让用工具」，
+    # 只有 WorkBuddy 真的消费它；要求某个 Case 必须用到工具，
+    # 靠的是 Expectations.min_tool_calls，两者分工不同。
+    allow_tools: bool = False
 
 
 @runtime_checkable
@@ -86,6 +92,20 @@ class Driver(Protocol):
 
     def collect_usage(self, turn: ChatTurn) -> UsageCollection:
         """采这一轮的 token 用量。采不到就返回空，**不要用 0 冒充**。"""
+        ...
+
+    def enrich(self, turn: ChatTurn) -> ChatTurn:
+        """跑完之后从第二来源补齐本轮原材料，补不到就原样返回。
+
+        **为什么需要这一步**：有的产品主通路看不到全部原材料。实测
+        YonWork 的 `/api/chat/send` SSE **只有 text 块，没有工具调用**，
+        而同一轮的会话 JSONL 里有 `toolCall`——不补的话 `tool_calls` 恒为 0，
+        「这个 Case 必须用到工具」的断言会稳定误判成「产品没调工具」，
+        把我们自己的观测盲区算成产品的失败。
+
+        ⚠️ 仍然**只搬运不判定**（二-3）：这里只负责把原材料补全，
+        补不到就照实留空，由 assertions 去决定那算不算问题。
+        """
         ...
 
     def close(self) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
@@ -132,6 +133,32 @@ class YonWorkDriver:
             elif label == "NewAPI 日志" and self._uses_newapi:
                 notes.append("NewAPI 未匹配到本轮日志，调用统计仍为未采集")
         return UsageCollection(samples=tuple(samples), notes=tuple(notes))
+
+    def enrich(self, turn: ChatTurn) -> ChatTurn:
+        """从会话 JSONL 补上 SSE 看不到的工具调用。
+
+        **2026-09-21 实测**：同一轮，`/api/chat/send` 的 SSE 里 content 块
+        只有 `text`（22 条 chat.message 全是文本增量），而会话 JSONL 里
+        明明白白有 `{"type":"toolCall"}` + `toolResult`。
+        所以 `tool_calls` 对 YonWork **恒为 0**，不是产品没调工具，
+        是我们这条通路看不见——拿它去判「工具用例」等于把观测盲区算成产品失败。
+
+        只在 SSE 一个都没给时才补；SSE 哪天开始给了，以主通路为准。
+        补不到就照实留空，**不编**。
+        """
+        if turn.tool_calls:
+            return turn
+        try:
+            found = collect_one(
+                turn.benchmark_id,
+                agent_id=self.agent_id,
+                started_at=_parse_iso(turn.started_at),
+            )
+        except (SessionLogError, ValueError, TypeError):
+            return turn  # 补采失败不改变本轮判定，和用量那三路一个规矩
+        if found is None or not found.tool_calls:
+            return turn
+        return replace(turn, tool_calls=found.tool_calls)
 
     def _backend_usage(self, turn: ChatTurn) -> UsageSample | None:
         if not self._uses_newapi:

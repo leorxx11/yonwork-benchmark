@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TURN_TIMEOUT_SECONDS,
         help="单轮超时（秒）",
     )
+    parser.add_argument(
+        "--allow-tools",
+        action="store_true",
+        help="允许被测产品调用工具（只对 WorkBuddy 有效；YonWork 的工具由智能体配置决定）",
+    )
     parser.add_argument("--limit", type=int, default=0, help="只跑前 N 轮，0 表示不限")
     parser.add_argument("--no-usage", action="store_true", help="不采集用量和后台调用统计")
     parser.add_argument("--no-xlsx", action="store_true", help="只出 JSONL + SQLite")
@@ -136,6 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model_query=args.model,
                 timeout_seconds=args.timeout,
                 transcript_dir=None if args.no_transcript else out_dir / "transcripts",
+                allow_tools=args.allow_tools,
             )
         )
         for line in driver.preflight():

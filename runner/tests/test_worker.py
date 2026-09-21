@@ -33,6 +33,10 @@ class _FakeDriver:
     def collect_usage(self, turn):
         raise AssertionError("run_batch 被打了桩，不该采用量")
 
+    def enrich(self, turn):
+        # 协议要求有这个方法。桩不补原材料，原样返回。
+        return turn
+
     def close(self) -> None:
         return None
 

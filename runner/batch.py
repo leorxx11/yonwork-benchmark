@@ -100,6 +100,19 @@ def run_one(
         for note in notes:
             report(f"  ! {note}")
 
+    if turn is not None:
+        # 放在采用量**之后**：补采读的是应用写出来的会话 JSONL，
+        # 采用量那一步已经等过落盘，这里就不用再单独等一次。
+        try:
+            turn = driver.enrich(turn)
+        except AttributeError:
+            # 驱动少实现了协议方法是**编程错误**，不是数据问题。
+            # 跟下面一起吞掉的话，新驱动忘了写 enrich 就会静默少一份原材料，
+            # 表现成「这个产品从来不调工具」——正是要防的那种假数据。
+            raise
+        except Exception as exc:  # noqa: BLE001 —— 补采失败不该改变本轮判定
+            report(f"  ! 原材料补采失败：{type(exc).__name__}: {exc}")
+
     usage = None
     for source in USAGE_SOURCES:
         usage = next((sample for sample in samples if sample.source == source), None)

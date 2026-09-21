@@ -92,6 +92,7 @@ def execute_job(
                 model_query=str(job.get("model_query") or ""),
                 timeout_seconds=float(job.get("timeout_seconds") or 600),
                 transcript_dir=out_dir / "transcripts",
+                allow_tools=bool(job.get("allow_tools", False)),
             )
         )
         for line in driver.preflight():

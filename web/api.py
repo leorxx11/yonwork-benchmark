@@ -281,6 +281,7 @@ def submit_job(
     limit_runs: str = Form("0"),
     collect_usage: bool = Form(False),
     export_xlsx: bool = Form(False),
+    allow_tools: bool = Form(False),
 ) -> HTMLResponse:
     try:
         # 没有模式行就回落成单产品单模型那一套，旧表单和 curl 脚本照常能用。
@@ -311,6 +312,7 @@ def submit_job(
                     limit_runs=limit,
                     collect_usage=collect_usage,
                     export_xlsx=export_xlsx,
+                    allow_tools=allow_tools,
                 )
             )
             return RedirectResponse(f"/jobs/{job['job_id']}", status_code=303)
@@ -325,6 +327,7 @@ def submit_job(
                 limit_runs=limit,
                 collect_usage=collect_usage,
                 export_xlsx=export_xlsx,
+                allow_tools=allow_tools,
             )
         )
     except (CaseCatalogError, ValueError) as exc:

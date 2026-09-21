@@ -136,6 +136,8 @@ CREATE TABLE IF NOT EXISTS benchmark_jobs (
     limit_runs         INT NOT NULL DEFAULT 0,
     collect_usage      BOOLEAN NOT NULL DEFAULT TRUE,
     export_xlsx        BOOLEAN NOT NULL DEFAULT TRUE,
+    -- 只有 WorkBuddy 消费它；YonWork 的工具由智能体配置决定，关不掉。
+    allow_tools        BOOLEAN NOT NULL DEFAULT FALSE,
     status             ENUM('Queued','Running','Completed','Failed','Cancelled')
                        NOT NULL DEFAULT 'Queued',
     total_runs         INT NOT NULL DEFAULT 0,

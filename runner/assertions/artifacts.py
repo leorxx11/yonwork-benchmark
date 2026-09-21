@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from ..models import Check, ChatTurn, Layer, Verdict
+from ..models import Check, ChatTurn, Expectations, Layer, Verdict
 
 
-def check_artifacts(turn: ChatTurn | None) -> list[Check]:
+def check_artifacts(
+    turn: ChatTurn | None, expectations: Expectations | None = None
+) -> list[Check]:
     """第二层：这一轮留下的产物能不能对上号。
 
     runId 直接取 idempotencyKey，所以 runId == BenchmarkId 是个硬不变量；
@@ -46,13 +48,41 @@ def check_artifacts(turn: ChatTurn | None) -> list[Check]:
             Check(Layer.ARTIFACT, "answer-present", Verdict.FAIL, "终止了但没有答案文本")
         )
 
-    checks.append(
-        Check(
-            Layer.ARTIFACT,
-            "tool-calls",
-            Verdict.PASS,
-            f"{len(turn.tool_calls)} 次：{'、'.join(turn.tool_calls) or '无'}",
-        )
-    )
+    checks.append(_tool_calls_check(turn, expectations))
 
     return checks
+
+
+def _tool_calls_check(turn: ChatTurn, expectations: Expectations | None) -> Check:
+    """工具调用：不声明就只记录，声明了才判。
+
+    以前这条恒 PASS——采了不判，跟 ErrorCalls 当初一模一样。
+    后果是「工具用例」跑出 0 次工具调用照样全绿：探针 S5/S6 就是这么
+    把两个普通短文本场景当成「工具场景没问题」的证据的（CLAUDE.md 七-2.5）。
+
+    判不过时**要分清是谁的问题**（二-4）：
+    - 工具是开着的，模型自己没调 → 产品的问题，Fail。
+    - 我们把工具关了却跑了个要求用工具的 Case → 跑法就不对，这轮数据无意义，
+      Invalid。**不能记 Fail**，那等于拿自己的配置错误去算产品的失败率。
+    """
+    count = len(turn.tool_calls)
+    detail = f"{count} 次：{'、'.join(turn.tool_calls) or '无'}"
+    wanted = expectations.min_tool_calls if expectations else None
+
+    if wanted is None:
+        return Check(Layer.ARTIFACT, "tool-calls", Verdict.PASS, detail)
+    if count >= wanted:
+        return Check(Layer.ARTIFACT, "tool-calls", Verdict.PASS, f"{detail}（要求 ≥{wanted}）")
+    if turn.tools_enabled is False:
+        return Check(
+            Layer.ARTIFACT,
+            "tool-calls",
+            Verdict.INVALID,
+            f"{detail}，但这一批把工具关了——要求 ≥{wanted} 的 Case 不该这么跑",
+        )
+    return Check(
+        Layer.ARTIFACT,
+        "tool-calls",
+        Verdict.FAIL,
+        f"{detail}，少于要求的 {wanted} 次",
+    )

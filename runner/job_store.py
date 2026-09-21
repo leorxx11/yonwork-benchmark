@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS benchmark_jobs (
     limit_runs         INT NOT NULL DEFAULT 0,
     collect_usage      BOOLEAN NOT NULL DEFAULT TRUE,
     export_xlsx        BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_tools        BOOLEAN NOT NULL DEFAULT FALSE,
     status             ENUM('Queued','Running','Completed','Failed','Cancelled')
                        NOT NULL DEFAULT 'Queued',
     total_runs         INT NOT NULL DEFAULT 0,
@@ -71,6 +72,7 @@ PLAN_COLUMNS = (
     ("plan_id", "ADD COLUMN plan_id CHAR(32) NULL AFTER job_id"),
     ("plan_position", "ADD COLUMN plan_position INT NOT NULL DEFAULT 0 AFTER plan_id"),
     ("plan_label", "ADD COLUMN plan_label VARCHAR(128) NOT NULL DEFAULT '' AFTER plan_position"),
+    ("allow_tools", "ADD COLUMN allow_tools BOOLEAN NOT NULL DEFAULT FALSE AFTER export_xlsx"),
 )
 
 EVENTS_SCHEMA = """
@@ -124,6 +126,7 @@ class NewJob:
     limit_runs: int = 0
     collect_usage: bool = True
     export_xlsx: bool = True
+    allow_tools: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,9 +147,11 @@ class NewPlan:
     limit_runs: int = 0
     collect_usage: bool = True
     export_xlsx: bool = True
+    allow_tools: bool = False
 
 
 def _ensure_plan_columns(cursor: Any) -> None:
+    """补齐后加的列。名字叫 plan 是历史原因，实际是「这张表所有按需迁移的列」。"""
     cursor.execute(
         "SELECT COLUMN_NAME FROM information_schema.COLUMNS"
         " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'benchmark_jobs'"
@@ -196,9 +201,9 @@ INSERT_JOB_SQL = """
 INSERT INTO benchmark_jobs (
     job_id, plan_id, plan_position, plan_label, batch_id, experiment_name,
     case_catalog_path, case_set_id, product, model_query, agent_id,
-    timeout_seconds, limit_runs, collect_usage, export_xlsx, status,
+    timeout_seconds, limit_runs, collect_usage, export_xlsx, allow_tools, status,
     created_at, updated_at
-) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
 """
 
 
@@ -231,6 +236,7 @@ def _insert_job(
             spec.limit_runs,
             spec.collect_usage,
             spec.export_xlsx,
+            spec.allow_tools,
             QUEUED,
             stamp,
             stamp,
@@ -299,6 +305,7 @@ def create_plan(spec: NewPlan) -> dict[str, Any]:
                         limit_runs=spec.limit_runs,
                         collect_usage=spec.collect_usage,
                         export_xlsx=spec.export_xlsx,
+                        allow_tools=spec.allow_tools,
                     ),
                     name=name,
                     stamp=stamp,

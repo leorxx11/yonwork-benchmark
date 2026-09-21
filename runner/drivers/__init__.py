@@ -21,6 +21,8 @@ DRIVERS = {
 def build_driver(spec: DriverSpec) -> Driver:
     """按产品名造一个驱动。Web、CLI、测试三个入口共用这一处。"""
     if spec.product == YonWorkDriver.product:
+        # YonWork 没有工具开关：工具由智能体自己的配置决定，
+        # 我们这边关不掉，所以 spec.allow_tools 对它无效，不要假装传进去。
         return YonWorkDriver(
             agent_id=spec.agent_id,
             model_query=spec.model_query,
@@ -33,6 +35,7 @@ def build_driver(spec: DriverSpec) -> Driver:
             model_query=spec.model_query,
             timeout_seconds=spec.timeout_seconds,
             transcript_dir=spec.transcript_dir,
+            allow_tools=spec.allow_tools,
         )
     raise DriverError(
         f"没有名为 {spec.product!r} 的驱动；可选：{'、'.join(sorted(DRIVERS))}"
