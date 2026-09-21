@@ -49,11 +49,20 @@ def _median(values: list[float]) -> float | None:
 
 
 def _spread_is_too_wide(values: list[float]) -> bool:
-    """(max − min) > 中位数 ⇒ 样本不足，不拿它下结论。"""
+    """(max − min) > 中位数 ⇒ 样本不足，不拿它下结论。
+
+    ⚠️ **跨度为 0 一律算够稳**，哪怕中位数也是 0。
+    原来写的是 `middle <= 0 or ...`，那是给滞后指标想的（中位 0 秒没意义），
+    套到 Long Task 上就成了误报：`0/0/0` 表示三轮都没观测到主线程阻塞，
+    是**最稳的结果**，却被判成样本不足。判得太松会漏掉问题，
+    判得太严会把干净结论也一起废掉，两头都不可信。
+    """
     if len(values) < 2:
         return True
-    middle = statistics.median(values)
-    return middle <= 0 or (max(values) - min(values)) > middle
+    spread = max(values) - min(values)
+    if spread == 0:
+        return False
+    return spread > statistics.median(values)
 
 
 def build_long_history(
@@ -215,11 +224,14 @@ def summarize(path: Path, thresholds: Thresholds = Thresholds()) -> dict[str, An
         name: data["first_lag_ms"]["median"] for name, data in p1_usable.items()
         if data["first_lag_ms"]["median"] >= thresholds.first_lag_ms
     }
-    all_tasks = [
-        data["long_task_max_ms"]["max"] for data in report["scenarios"].values()
+    tasks = {
+        name: data["long_task_max_ms"] for name, data in report["scenarios"].items()
         if data["long_task_max_ms"]["max"] is not None
-    ]
-    p2_worst = max(all_tasks) if all_tasks else None
+    }
+    p2_worst = max((d["max"] for d in tasks.values()), default=None)
+    # Long Task 是绝对量，样本不足时**不能判通过**——那等于拿一个还没稳定的
+    # 数去下「不是瓶颈」这种结论。宁可记 inconclusive，也不要一个好看的 pass。
+    p2_thin = sorted(name for name, d in tasks.items() if d["thin"])
 
     ratios = [
         data["complete_lag_per_1k"]["median"] for data in controlled.values()
@@ -237,7 +249,13 @@ def summarize(path: Path, thresholds: Thresholds = Thresholds()) -> dict[str, An
         "P2_long_task": {
             "threshold_ms": thresholds.long_task_ms,
             "worst_ms": p2_worst,
-            "pass": p2_worst is not None and p2_worst < thresholds.long_task_ms,
+            "thin_scenarios": p2_thin,
+            "inconclusive": bool(p2_thin),
+            "pass": (
+                not p2_thin
+                and p2_worst is not None
+                and p2_worst < thresholds.long_task_ms
+            ),
         },
         "P3_complexity": {
             "threshold_ratio": thresholds.complexity_ratio,
@@ -252,12 +270,20 @@ def summarize(path: Path, thresholds: Thresholds = Thresholds()) -> dict[str, An
 
 
 def _stat(values: list[float]) -> dict[str, Any]:
-    """中位数 + 最小/最大。**不给均值**——本项目的分布上均值没有意义。"""
+    """中位数 + 最小/最大 + 样本是否够。**不给均值**——本项目的分布上均值没有意义。
+
+    `thin` **逐指标算**，不是整场景一个标志。2026-09-21 就栽在这：
+    原来只对 `first_lag_ms` 判样本不足，结果 S4 的 Long Task 是 182/88/79
+    （中位 88、跨度 103），按协议早该标样本不足，却被当成「最差 182ms」
+    写进了结论——而它恰恰是唯一支撑「renderer 不是瓶颈」的那个数。
+    协议里写明「绝对量不抵消，必须报区间」，最需要这条检查的就是它。
+    """
     if not values:
-        return {"median": None, "min": None, "max": None, "n": 0}
+        return {"median": None, "min": None, "max": None, "n": 0, "thin": True}
     return {
         "median": round(_median(values) or 0, 1),
         "min": round(min(values), 1),
         "max": round(max(values), 1),
         "n": len(values),
+        "thin": _spread_is_too_wide(values),
     }
