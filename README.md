@@ -6,6 +6,7 @@ YonWork，逐轮保存结果、采集用量、执行五层断言，最后在同�
 背景、环境坑、架构决策和待办见 [CLAUDE.md](CLAUDE.md)。本轮基础设施与前端集成的完整改动
 记录见 [docs/implementation-summary.md](docs/implementation-summary.md)。
 逐轮 ErrorCalls 采集的范围和验收结果见 [docs/error-calls-collection.md](docs/error-calls-collection.md)。
+**现在能说什么、不能说什么，见 [docs/conclusions-and-risks.md](docs/conclusions-and-risks.md)。**
 
 ## 换机后一键启动
 
@@ -136,9 +137,8 @@ docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: u
 | `newapi/` | 被测模型网关及其持久化数据 |
 | `compose.yml` | 一键环境：MySQL、NewAPI、Web、worker |
 | `results/` | 每批 JSONL/SQLite/XLSX/SSE 产物，不进版本库 |
-| `benchmark-companion/` | WorkBuddy 暂无 API 时使用的人工跑批 GUI |
-| `docs/` | YonWork 自动化调查报告与本轮实现总结 |
-| `archive/` | 已废弃的 PAD 流程和历史探测脚本，不维护 |
+| `docs/` | 调查报告、实现总结、结论与风险 |
+| `archive/` | 已废弃的 PAD 流程、历史探测脚本、人工跑批 GUI，不维护 |
 
 ## 本地开发与测试
 

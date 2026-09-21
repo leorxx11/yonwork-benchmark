@@ -125,7 +125,8 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 | `scripts/newapi_stats.ps1` | 拉 NewAPI 后台用量 | **保留**，见下 |
 | `scripts/extract_asar.py` | 无需 Node 的 asar 解包/grep 工具 | 查源码时还用得到 |
 | `docs/yonwork-automation-report.md` | 完整调查报告（已脱敏） | **权威参考** |
-| `benchmark-companion/` | **WorkBuddy** 的人工跑批 GUI（热键计时 + SQLite + Excel 同步） | 在用，见下 |
+| `docs/conclusions-and-risks.md` | 现在能说什么 / 不能说什么 / 风险清单 | **对外讲之前先看这个** |
+| `archive/benchmark-companion/` | WorkBuddy 的人工跑批 GUI（热键计时 + SQLite + Excel 同步） | **已归档 2026-09-21**，见下 |
 | `yonwork_usage/` | 解析 llm-observer JSONL 取 token | 主用途已被 `sessionlog.py` 取代，见下 |
 | `archive/` | PAD 流程导出、CDP 探测脚本、旧错误日志、当初的调查 prompt | 历史记录，不维护 |
 
@@ -134,16 +135,16 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 这个脚本留作手工交叉验证——它不依赖我们自己的任何代码，
 所以当 runner 的数字可疑时，用它判断到底是谁错了。这是**两端，不是重复**。
 
-**`benchmark-companion/` 可以准备退场了**：它服务的是 **WorkBuddy**，不是 YonWork。
-`runner/drivers/workbuddy.py` 已经实测跑通（见七-3.2），
-**WorkBuddy 那两个模式终于和 YonWork 那两个走同一条自动通路、同一套断言**——
+**`benchmark-companion/` 已于 2026-09-21 移进 `archive/`，不再维护，也不删。**
+它服务的是 **WorkBuddy** 的人工跑批，而 `runner/drivers/workbuddy.py` 这条
+自动通路已经把那两个模式接上了同一套断言——
 「四个模式里有一半数据质量低一档」这个缺口到此补上。
-**2026-09-21：去留的前置条件已经全部满足，可以决定了。**
-Web 执行链路打通（宿主机 Worker，七-3.4）、跨模式一键提交（七-3.3）、
-工具调用用例两个产品都实测 Pass（七-3.5）。
-当初「等多模型和工具调用的 case 也跑过一轮」的条件到此清掉，
-`runner/drivers/workbuddy.py` 这条自动通路已经覆盖了 WorkBuddy 的那两个模式。
-**剩下的是一个决定，不是一件待办**——要不要留着那套人工跑批 GUI 当兜底。
+退场的三个前置条件全部实测通过：Web 执行链路（七-3.4）、
+跨模式一键提交（七-3.3）、工具调用用例两个产品都 Pass（七-3.5）。
+留着是因为它是**唯一不依赖我们自己代码**的那条路：
+将来 CLI 换版本或驱动出问题时，它能回答「到底是产品坏了还是我们的工具坏了」——
+和 `scripts/newapi_stats.ps1` 留下来的理由是同一个。
+归档后适用八节那条：**不要再修它**。
 
 **`yonwork_usage/` 先别删**：它读 `llm-observer/*.jsonl`，`runner/sessionlog.py` 读
 `sessions/*.jsonl`，**是两个不同的文件**。取 token 已被覆盖，但 llm-observer 独有
