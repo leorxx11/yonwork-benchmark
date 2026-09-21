@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
@@ -14,9 +13,10 @@ from .case_catalog import (
     load_case_set,
 )
 from .cases import CasesError, load_cases
-from .catalog import CatalogError, list_model_choices, resolve_model_choice
-from .client import ChatClient, DEFAULT_TURN_TIMEOUT_SECONDS
-from .discovery import DiscoveryError, discover, has_session, health_check, session_status
+from .catalog import CatalogError, list_model_choices
+from .client import DEFAULT_TURN_TIMEOUT_SECONDS
+from .discovery import DiscoveryError, discover
+from .drivers import DRIVERS, DriverError, DriverSpec, build_driver
 from .models import EXIT_CODES, Verdict, expand_cases
 from .report import build_database, export_xlsx, summarize
 from .transport import TransportError
@@ -52,7 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--id-prefix", default="bench", help="BenchmarkId 前缀")
     parser.add_argument("--agent", default="main", help="agent id")
     parser.add_argument(
-        "--product", default="yonwork", help="产品维度：yonwork / workbuddy"
+        "--product",
+        default="yonwork",
+        choices=sorted(DRIVERS),
+        help="被测产品，决定用哪个驱动",
     )
     parser.add_argument(
         "--model",
@@ -126,57 +129,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
-        endpoint = discover()
-        health = health_check(endpoint)
-    except (DiscoveryError, TransportError) as exc:
+        driver = build_driver(
+            DriverSpec(
+                product=args.product,
+                agent_id=args.agent,
+                model_query=args.model,
+                timeout_seconds=args.timeout,
+                transcript_dir=None if args.no_transcript else out_dir / "transcripts",
+            )
+        )
+        for line in driver.preflight():
+            _log(line)
+    except DriverError as exc:
         _log(f"前置检查失败：{exc}")
-        _log("检查顺序：应用在跑吗 → 脚本绕开 http_proxy 了吗 → 运行时文件在哪")
         return EXIT_USAGE
-    _log(f"Host API：{endpoint.base_url}（来源 {endpoint.source}，健康 {health}）")
-
-    try:
-        if not has_session(session_status(endpoint)):
-            _log("尚未登录（hasSession=false），先在应用里登录再跑，否则整批都是 Fail")
-            return EXIT_USAGE
-    except TransportError as exc:
-        _log(f"登录态检查失败：{exc}")
-        return EXIT_USAGE
-
-    model_choice = None
-    if args.model:
-        try:
-            model_choice = resolve_model_choice(list_model_choices(endpoint), args.model)
-        except (CatalogError, TransportError) as exc:
-            _log(f"模型解析失败：{exc}")
-            return EXIT_USAGE
-        _log(f"指定模型：{model_choice.label}")
-    else:
-        _log("未指定 --model，用智能体当前的默认模型")
 
     if args.dry_run:
         for item in items:
             _log(f"  {item.position + 1:>3}. {item.case_name}#{item.run_no} {item.prompt[:40]}")
         return 0
 
-    client = ChatClient(
-        endpoint,
-        agent_id=args.agent,
-        timeout_seconds=args.timeout,
-        transcript_dir=None if args.no_transcript else out_dir / "transcripts",
-        model_choice=model_choice,
-    )
     options = BatchOptions(
         batch_id=batch_id,
         results_path=results_path,
         id_prefix=args.id_prefix,
-        product=args.product,
         collect_usage=not args.no_usage,
     )
 
     try:
-        records = run_batch(
-            items, client=client, endpoint=endpoint, options=options, report=_log
-        )
+        records = run_batch(items, driver=driver, options=options, report=_log)
     except KeyboardInterrupt:
         _log("已中断；已完成的轮次都在 " + str(results_path))
         records = []

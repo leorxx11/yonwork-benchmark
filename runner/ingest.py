@@ -213,9 +213,43 @@ def ingest_file(
     started_at, ended_at = _batch_window(records)
 
     if connection is not None:
+        _widen_usage_source(connection)
         return _write(connection, meta, suite_name, records, started_at, ended_at)
     with connect() as fresh:
+        _widen_usage_source(fresh)
         return _write(fresh, meta, suite_name, records, started_at, ended_at)
+
+
+_SOURCE_WIDENED = False
+
+
+def _widen_usage_source(connection: Any) -> None:
+    """把 `usage_samples.source` 从 ENUM 放宽成 VARCHAR。
+
+    `infra/schema.sql` 只在数据目录为空时执行一次，已有的库永远跑不到那份新定义。
+    不迁的话，`workbuddy-cli` 这一行会在插入时被 MySQL 拒掉，
+    而且症状是「用量列空着」——看起来跟端上漏记（六-3）一模一样，很难查。
+
+    只在确实还是 ENUM 时才 ALTER，所以重复调用是廉价的。
+    """
+    global _SOURCE_WIDENED
+    if _SOURCE_WIDENED:
+        return
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT DATA_TYPE FROM information_schema.COLUMNS"
+                " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usage_samples'"
+                " AND COLUMN_NAME = 'source'"
+            )
+            row = cursor.fetchone()
+            if row and str(row.get("DATA_TYPE", "")).lower() == "enum":
+                cursor.execute(
+                    "ALTER TABLE usage_samples MODIFY COLUMN source VARCHAR(32) NOT NULL"
+                )
+    except Exception as exc:  # noqa: BLE001 —— 迁移失败不该拦住入库
+        print(f"提示：usage_samples.source 放宽失败，新来源可能存不进去：{exc}")
+    _SOURCE_WIDENED = True
 
 
 def _write(

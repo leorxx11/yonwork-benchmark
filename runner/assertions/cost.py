@@ -4,7 +4,8 @@ from ..models import Check, ChatTurn, Expectations, Layer, UsageSample, Verdict
 
 
 # 能精确对上某一轮的匹配方式。其余（时间窗）都要留痕。
-EXACT_MATCHES = frozenset({"run-id", "idempotency-key"})
+# session-id 是 WorkBuddy 那条：用量随本轮 CLI 输出一起回来，天然就是这一轮的。
+EXACT_MATCHES = frozenset({"run-id", "idempotency-key", "session-id"})
 
 
 def check_cost(

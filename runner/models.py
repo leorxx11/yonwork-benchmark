@@ -147,10 +147,15 @@ class ChatTurn:
     transcript_path: str | None = None
 
 
-# 同一轮的 token 可能有三个来源，谁都可能缺：
+# 同一轮的 token 可能有多个来源，谁都可能缺：
 # 端上 HTTP 端点实测会漏记，NewAPI 只记走它的那些轮，会话 JSONL 端上本地最全。
 # 断言取用时按这个顺序优先。
-USAGE_SOURCES = ("device-api", "session-jsonl", "newapi")
+#
+# 这张表**跨产品**：前三个是 YonWork 的，`workbuddy-cli` 是 WorkBuddy 的
+#（随 CLI 输出一起回来，按 session-id 精确匹配）。一轮只会产出自己产品的来源，
+# 所以放在一张表里不会打架；但 `workbuddy-cli` 必须排在 `newapi` 前面——
+# 前者精确匹配，后者是时间窗。
+USAGE_SOURCES = ("device-api", "session-jsonl", "workbuddy-cli", "newapi")
 
 
 @dataclass(frozen=True, slots=True)

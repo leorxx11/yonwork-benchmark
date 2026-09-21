@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from runner.discovery import HostEndpoint
 from runner.job_store import (
     CANCELLED,
     COMPLETED,
@@ -15,6 +14,27 @@ from runner.job_store import (
     exclusive_worker_lock,
 )
 from runner.worker import execute_job
+
+
+class _FakeDriver:
+    """只提供 Driver 协议要的那几项，不碰任何产品。"""
+
+    product = "yonwork"
+
+    def preflight(self):
+        return ["前置检查通过（测试桩）"]
+
+    def session_key(self, benchmark_id: str) -> str:
+        return f"agent:main:{benchmark_id}".lower()
+
+    def run_turn(self, *, benchmark_id: str, prompt: str):
+        raise AssertionError("run_batch 被打了桩，不该真的跑一轮")
+
+    def collect_usage(self, turn):
+        raise AssertionError("run_batch 被打了桩，不该采用量")
+
+    def close(self) -> None:
+        return None
 
 
 class WorkerTests(unittest.TestCase):
@@ -64,14 +84,9 @@ class WorkerTests(unittest.TestCase):
             patch("runner.worker.expand_cases", return_value=[object(), object()]),
             patch("runner.worker.set_total_runs"),
             patch("runner.worker.set_completed_runs"),
-            patch(
-                "runner.worker.discover",
-                return_value=HostEndpoint("http://127.0.0.1:3211"),
-            ),
-            patch("runner.worker.health_check"),
-            patch("runner.worker.session_status", return_value={"hasSession": True}),
-            patch("runner.worker.has_session", return_value=True),
-            patch("runner.worker.ChatClient"),
+            # Worker 现在只认 Driver 接口，前置检查、模型解析、发请求
+            # 全在驱动里；这里换掉整个驱动就够，不用再逐个补 YonWork 的桩。
+            patch("runner.worker.build_driver", return_value=_FakeDriver()),
             patch("runner.worker.run_batch", side_effect=fake_run_batch),
             patch("runner.worker.build_database"),
             patch("runner.worker.ingest_file"),

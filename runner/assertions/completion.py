@@ -4,7 +4,15 @@ from ..models import Check, ChatTurn, Layer, Verdict
 
 
 # stopReason 属于「正常收尾」的取值。其余取值都当作产品没跑完。
-NORMAL_STOP_REASONS = frozenset({"stop", "end_turn", "endturn", "complete", "completed"})
+#
+# 这张表**跨产品**，词表归断言层管：前五个是 YonWork 的 stopReason，
+# `success` 是 WorkBuddy 最终 result 的 subtype。
+# 别改成让各自的驱动把自己的取值映射成 "stop"——那等于驱动在判定
+# 「这算不算正常结束」，正是 CLAUDE.md 二-3 要拦的那类改动。
+# WorkBuddy 的 `error_*` 系列 subtype 落在表外，照常判 Fail，这是对的。
+NORMAL_STOP_REASONS = frozenset(
+    {"stop", "end_turn", "endturn", "complete", "completed", "success"}
+)
 
 
 def _failure_checks(failure: BaseException) -> list[Check]:

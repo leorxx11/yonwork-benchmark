@@ -86,7 +86,11 @@ CREATE TABLE IF NOT EXISTS checks (
 CREATE TABLE IF NOT EXISTS usage_samples (
     id                BIGINT AUTO_INCREMENT PRIMARY KEY,
     benchmark_id      VARCHAR(128) NOT NULL,
-    source            ENUM('device-api','session-jsonl','newapi') NOT NULL,
+    -- 取值见 runner/models.py 的 USAGE_SOURCES。
+    -- **故意不用 ENUM**：每接一个新产品就会多一个来源（workbuddy-cli 就是这么来的），
+    -- ENUM 会让每次都要改表——而这张表只在数据目录为空时建一次，
+    -- 已有库根本跑不到这里，新来源会在入库时被静默拒掉。
+    source            VARCHAR(32) NOT NULL,
     model             VARCHAR(128) NULL,
     provider          VARCHAR(128) NULL,
     input_tokens      INT NULL,

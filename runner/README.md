@@ -69,6 +69,7 @@ case_sets:
 
 | 文件 | 职责 |
 |---|---|
+| `drivers/` | 被测产品的驱动：`yonwork`（Host API + SSE）、`workbuddy`（一次性 CLI 进程） |
 | `case_catalog.py` | 严格读取 YAML catalog、选择用例集、展开环境变量 |
 | `cases.py` | 旧 Excel 输入兼容层 |
 | `discovery.py` | 从 `host-api-runtime.json` 读 port/token，探测健康和登录态 |
@@ -86,6 +87,38 @@ case_sets:
 | `report.py` | JSONL → SQLite → XLSX |
 
 驱动层只发请求、收原材料、记时间窗；判定全部留在 `assertions/`，以便单测和 diff。
+
+## Driver 接口
+
+`batch.py` 对被测产品**一无所知**：隔离、逐轮落盘、判定、计数这四件事是共用的，
+产品相关的部分全在 `drivers/` 后面。接口按两边**都成立**的部分写：
+
+| | YonWork | WorkBuddy |
+|---|---|---|
+| 通路 | 常驻 Host API + SSE | 每轮一个一次性进程 + JSON |
+| 隔离 | 全新 `sessionKey`（全小写） | 全新 `--session-id` + `--no-session-persistence` |
+| 终止 | `chat.complete` / `state:"final"` | 最后一条 `type:"result"` |
+| 用量 | 事后采两个来源 | 随本轮输出一起回来，按 session-id 精确匹配 |
+
+所以接口里没有「端点」「SSE」「进程」这些只有一边成立的概念，只有
+`preflight` / `session_key` / `run_turn` / `collect_usage` / `close`。
+
+两条容易被破坏的约定：
+
+- **别把判定写进驱动。** WorkBuddy 报告列的七条成功判定，有五条直接落在现成的断言上
+  （`subtype` → 完成性、`session_id` → 产物层 run-id、实际模型 → 成本层 model-match），
+  不要在驱动里重写一份。
+- **词表归断言层。** `NORMAL_STOP_REASONS`、`USAGE_SOURCES`、`EXACT_MATCHES` 都是跨产品的表，
+  新产品往表里加取值，而不是让驱动把自己的取值映射成别人的——那等于驱动在判定。
+
+`--product` 选哪个驱动。两条链路都已实测跑通一轮。
+
+`workbuddy` 有两个用之前必须知道的约束：
+
+- **冷启动很贵。** 实测外层 16.744s、内部 `duration_ms` 3.087s——每个 case 一个新进程，
+  冷启动占 13.6s。耗时数字不能直接跟 YonWork 的常驻服务对比。
+- **容器里的 Worker 跑不了它。** 它要起 Windows 进程，而 compose 里的 worker 看不到
+  `/mnt/d` 也没有 WSL interop。要从 Web 控制台跑 WorkBuddy，Worker 得在宿主机原生起。
 
 ## 三个容易踩的点
 

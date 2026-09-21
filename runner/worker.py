@@ -11,10 +11,10 @@ from typing import Any, Callable, Sequence
 
 from .batch import BatchOptions, run_batch
 from .case_catalog import CaseCatalogError, load_case_set
-from .catalog import CatalogError, list_model_choices, resolve_model_choice
-from .client import ChatClient
+from .catalog import CatalogError
 from .db import DatabaseError
-from .discovery import DiscoveryError, discover, has_session, health_check, session_status
+from .discovery import DiscoveryError
+from .drivers import DriverError, DriverSpec, build_driver
 from .ingest import IngestError, ingest_file, suite_id_for
 from .job_store import (
     CANCELLED,
@@ -85,32 +85,22 @@ def execute_job(
         set_total_runs(job_id, len(items))
         _log(job_id, f"已加载 {case_set.name}：{len(items)} 轮")
 
-        endpoint = discover()
-        health_check(endpoint)
-        if not has_session(session_status(endpoint)):
-            raise DiscoveryError("YonWork 尚未登录（hasSession=false）")
-        _log(job_id, f"YonWork 前置检查通过：{endpoint.base_url}")
-
-        model_choice = None
-        model_query = str(job.get("model_query") or "").strip()
-        if model_query:
-            model_choice = resolve_model_choice(list_model_choices(endpoint), model_query)
-            _log(job_id, f"指定模型：{model_choice.label}")
-        else:
-            _log(job_id, "使用 YonWork 智能体当前默认模型")
-
-        client = ChatClient(
-            endpoint,
-            agent_id=str(job.get("agent_id") or "main"),
-            timeout_seconds=float(job.get("timeout_seconds") or 600),
-            transcript_dir=out_dir / "transcripts",
-            model_choice=model_choice,
+        driver = build_driver(
+            DriverSpec(
+                product=str(job.get("product") or "yonwork"),
+                agent_id=str(job.get("agent_id") or "main"),
+                model_query=str(job.get("model_query") or ""),
+                timeout_seconds=float(job.get("timeout_seconds") or 600),
+                transcript_dir=out_dir / "transcripts",
+            )
         )
+        for line in driver.preflight():
+            _log(job_id, line)
+
         options = BatchOptions(
             batch_id=batch_id,
             results_path=results_path,
             id_prefix=f"web-{job_id[:8]}",
-            product=str(job.get("product") or "yonwork"),
             collect_usage=bool(job.get("collect_usage", True)),
         )
         completed = 0
@@ -122,8 +112,7 @@ def execute_job(
 
         records = run_batch(
             items,
-            client=client,
-            endpoint=endpoint,
+            driver=driver,
             options=options,
             report=lambda message: _log(
                 job_id, message, "warning" if message.lstrip().startswith("!") else "info"
@@ -131,6 +120,7 @@ def execute_job(
             on_record=on_record,
             should_stop=lambda: shutdown_requested() or is_cancel_requested(job_id),
         )
+        driver.close()
 
         if records:
             database_path = out_dir / "results.db"
@@ -147,16 +137,20 @@ def execute_job(
             suite_id = suite_id_for(str(job["experiment_name"]))
             _log(job_id, f"结果已入库：{summarize(results_path).as_text()}")
 
-            try:
-                session_result = collect_session_usage(
-                    suite_id, agent_id=str(job.get("agent_id") or "main")
-                )
-                _log(
-                    job_id,
-                    f"会话用量补采：{session_result['matched']}/{session_result['runs']} 轮",
-                )
-            except (DatabaseError, SessionLogError) as exc:
-                _log(job_id, f"会话用量补采跳过：{exc}", "warning")
+            # 会话 JSONL 补采只对 YonWork 成立：它读的是 YonWork 自己的
+            # `sessions/*.jsonl`。WorkBuddy 的用量跑批当时就随 CLI 输出回来了，
+            # 没有第二个来源可补，跑这一步只会白报一条 warning。
+            if driver.product == "yonwork":
+                try:
+                    session_result = collect_session_usage(
+                        suite_id, agent_id=str(job.get("agent_id") or "main")
+                    )
+                    _log(
+                        job_id,
+                        f"会话用量补采：{session_result['matched']}/{session_result['runs']} 轮",
+                    )
+                except (DatabaseError, SessionLogError) as exc:
+                    _log(job_id, f"会话用量补采跳过：{exc}", "warning")
 
             try:
                 backend_result = reconcile_suite(suite_id)
@@ -194,6 +188,7 @@ def execute_job(
         CatalogError,
         DatabaseError,
         DiscoveryError,
+        DriverError,
         IngestError,
         TransportError,
     ) as exc:
