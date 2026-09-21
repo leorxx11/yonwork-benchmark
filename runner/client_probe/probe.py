@@ -47,6 +47,9 @@ class ProbeRecord:
     # **不是 0**——用 0 冒充等于把「没测」说成「没卡顿」。
     long_task_count: int | None = None
     long_task_max_ms: int | None = None
+    # 本轮实际发生的工具调用。S5/S6 是冲着工具去的，
+    # 要是这里恒为 0，那两个场景就没测到它们该测的东西——照实报，别假装测过。
+    tool_calls: int | None = None
     # ---- Host API 侧，只用时长 ----
     backend_first_delta_ms: float | None = None
     backend_duration_ms: float | None = None
@@ -91,6 +94,7 @@ def _apply_backend(record: ProbeRecord, turn: ChatTurn) -> None:
     )
     record.backend_duration_ms = round(turn.duration_seconds * 1000, 1)
     record.terminated_by = turn.terminated_by
+    record.tool_calls = len(turn.tool_calls)
 
 
 def _apply_ui(record: ProbeRecord, events: list[dict[str, Any]], origin: float) -> None:
@@ -142,10 +146,17 @@ async def _run(
     session_key: str,
     endpoint: HostEndpoint,
     timeout_seconds: float,
+    open_title: str | None = None,
 ) -> ProbeRecord:
     record = ProbeRecord(benchmark_id=benchmark_id, scenario=scenario, started_at=now_iso())
 
     async with attach() as session:
+        # 给了标题就先点开那个会话。
+        # ⚠️ 下面的 `chatRootPresent` 只验「有会话开着」，**不验是哪一个**——
+        # 目标会话没开时它照样过，然后静默测到别的会话上去，采到零事件或脏数据。
+        # 所以要往既有会话发，就必须走这一步，别指望 fast-fail 兜住。
+        if open_title is not None:
+            await open_session(session, open_title)
         # 把 prompt 前若干字注入观察器，用来排除用户自己那条气泡。
         head = json.dumps(prompt.strip()[:40], ensure_ascii=False)
         status = await session.evaluate(OBSERVER_JS.replace("__PROMPT_HEAD__", head))
@@ -299,6 +310,7 @@ def probe_once(
     endpoint: HostEndpoint | None = None,
     timeout_seconds: float = 180.0,
     auto: bool = True,
+    open_title: str | None = None,
 ) -> ProbeRecord:
     """量一轮客户端开销。
 
@@ -324,5 +336,6 @@ def probe_once(
             session_key or "agent:main:main",
             endpoint,
             timeout_seconds,
+            open_title=open_title,
         )
     )

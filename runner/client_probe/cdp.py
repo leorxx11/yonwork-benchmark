@@ -111,7 +111,14 @@ class Session:
 @asynccontextmanager
 async def attach(cdp_url: str = CDP_URL) -> AsyncIterator[Session]:
     target = main_renderer(cdp_url)
-    async with websockets.connect(target["webSocketDebuggerUrl"], max_size=50_000_000) as ws:
+    # ⚠️ **关掉 keepalive**（`ping_interval=None`）。默认 20s 没收到 pong 就断连，
+    # 而我们测的恰恰是「renderer 忙到什么程度」——渲染 250 行表格时主线程卡住，
+    # DevTools 的消息循环跟着停，pong 回不来，连接就被库主动掐掉：
+    # `ConnectionClosedError: keepalive ping timeout`。实测 S3 每轮必崩在这。
+    # 探针的连接是短命且由我们自己收尾的，本来也不需要保活。
+    async with websockets.connect(
+        target["webSocketDebuggerUrl"], max_size=50_000_000, ping_interval=None
+    ) as ws:
         session = Session(ws)
         await session._call("Runtime.enable")
         await session.add_binding()

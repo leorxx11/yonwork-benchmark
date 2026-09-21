@@ -76,7 +76,6 @@ case_sets:
           说明固定写「这是用于渲染压力测试的占位说明文本」。
           只输出表格本身，前后不要任何多余文字。
         runs: 3
-        enabled: false
         assertions:
           expect: ["条目250"]
           min_length: 8000
@@ -88,6 +87,36 @@ case_sets:
           第二部分：一个 python 代码块，包含恰好 40 行代码，内容为打印 1 到 40 的循环展开写法。
           第三部分：一个恰好 20 项的嵌套无序列表，每项下再带 2 个子项。
         runs: 3
-        enabled: false
         assertions:
           min_length: 1500
+
+      # S5 / S6 是**不受控**场景：输出长度和结构取决于模型当轮行为，
+      # 所以只看 Long Task 和 text_updates，不参与归一化比较。
+      # 见 docs/client-probe-protocol.md。探针会记录 tool_calls，
+      # 如果实际没触发工具，这两个场景就没有测到它们该测的东西——照实报。
+      - id: S5
+        prompt: >-
+          请依次完成三件事，每件事单独一段，不要合并：
+          第一，列出当前工作目录下的文件；
+          第二，告诉我现在的日期和时间；
+          第三，用一句话总结你刚才做了什么。
+        runs: 3
+        assertions:
+          min_length: 50
+
+      - id: S6
+        prompt: >-
+          请生成一份名为 probe-artifact 的 Markdown 文档并保存为文件，
+          内容是一个恰好 20 行数据的表格，表头为 序号 | 指标 | 数值。
+          保存完成后用一句话告诉我文件路径。
+        runs: 3
+        assertions:
+          min_length: 20
+
+      # S7 和 S1 的 prompt **必须完全一致**——变量只有「会话里已有多少历史」。
+      # 执行方式也不同：它走 auto=False，发到预先养出长历史的那个会话。
+      - id: S7
+        prompt: 请用三句话介绍一下杭州，不要用列表，不要用 Markdown 格式。
+        runs: 3
+        assertions:
+          min_length: 30
