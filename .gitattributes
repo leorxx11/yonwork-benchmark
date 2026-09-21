@@ -21,3 +21,10 @@ requirements.txt text eol=lf
 *.xlsx binary
 *.png binary
 *.exe binary
+
+# 这些文件被 Linux 侧的工具逐行解析，CRLF 会让它们静默出错：
+# .env 的值会带上 \r（进容器变成打不开的路径），.dockerignore 的模式匹配不上。
+.dockerignore text eol=lf
+.env.example  text eol=lf
+*.env.example text eol=lf
+.gitignore    text eol=lf
