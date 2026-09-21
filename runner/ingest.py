@@ -131,6 +131,7 @@ def _run_row(record: JsonObject, batch_id: str) -> tuple[Any, ...]:
         turn.get("requested_model"),
         to_millis(turn.get("duration_seconds")),
         to_millis(turn.get("first_delta_seconds")),
+        to_millis(turn.get("engine_seconds")),
         turn.get("terminated_by"),
         turn.get("stop_reason"),
         len(tool_calls) if isinstance(tool_calls, list) else None,
@@ -146,13 +147,14 @@ def _run_row(record: JsonObject, batch_id: str) -> tuple[Any, ...]:
 RUN_SQL = """
 INSERT INTO runs (benchmark_id, batch_id, position, case_name, run_no, prompt,
     session_key, run_id, verdict, requested_model, duration_ms, first_delta_ms,
-    terminated_by, stop_reason, tool_call_count, answer_preview, transcript_path,
-    note, started_at, ended_at, created_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    engine_ms, terminated_by, stop_reason, tool_call_count, answer_preview,
+    transcript_path, note, started_at, ended_at, created_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON DUPLICATE KEY UPDATE
     batch_id=VALUES(batch_id), verdict=VALUES(verdict),
     requested_model=VALUES(requested_model), duration_ms=VALUES(duration_ms),
-    first_delta_ms=VALUES(first_delta_ms), terminated_by=VALUES(terminated_by),
+    first_delta_ms=VALUES(first_delta_ms), engine_ms=VALUES(engine_ms),
+    terminated_by=VALUES(terminated_by),
     stop_reason=VALUES(stop_reason), tool_call_count=VALUES(tool_call_count),
     answer_preview=VALUES(answer_preview), transcript_path=VALUES(transcript_path),
     note=VALUES(note), started_at=VALUES(started_at), ended_at=VALUES(ended_at)
@@ -219,9 +221,11 @@ def ingest_file(
 
     if connection is not None:
         _widen_usage_source(connection)
+        _ensure_engine_column(connection)
         return _write(connection, meta, suite_name, records, started_at, ended_at)
     with connect() as fresh:
         _widen_usage_source(fresh)
+        _ensure_engine_column(fresh)
         return _write(fresh, meta, suite_name, records, started_at, ended_at)
 
 
@@ -255,6 +259,34 @@ def _widen_usage_source(connection: Any) -> None:
     except Exception as exc:  # noqa: BLE001 —— 迁移失败不该拦住入库
         print(f"提示：usage_samples.source 放宽失败，新来源可能存不进去：{exc}")
     _SOURCE_WIDENED = True
+
+
+_ENGINE_COLUMN_READY = False
+
+
+def _ensure_engine_column(connection: Any) -> None:
+    """给已有的库补 `runs.engine_ms`。
+
+    和上面一样的理由：`infra/schema.sql` 只在数据目录为空时跑一次。
+    **这次不能吞异常**——`_run_row` 已经无条件多传了一个值，列不存在的话
+    每一条 INSERT 都会失败，整批入不了库。与其让人对着
+    "Unknown column 'engine_ms'" 猜，不如在这里就炸。
+    （`_widen_usage_source` 吞异常是对的：那条不迁也只是少一个来源。）
+    """
+    global _ENGINE_COLUMN_READY
+    if _ENGINE_COLUMN_READY:
+        return
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS"
+            " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'runs'"
+            " AND COLUMN_NAME = 'engine_ms'"
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                "ALTER TABLE runs ADD COLUMN engine_ms INT NULL AFTER first_delta_ms"
+            )
+    _ENGINE_COLUMN_READY = True
 
 
 def _write(

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from runner.drivers import DriverError, DriverSpec, build_driver
+from runner.drivers import workbuddy
 from runner.drivers.workbuddy import WorkBuddyDriver
 from runner.drivers.yonwork import YonWorkDriver
 from runner.client import ChatError, ChatTimeout
@@ -165,6 +168,35 @@ class WorkBuddyParsingTests(unittest.TestCase):
         # 判模型要用服务端实际执行的那个，不能信命令行参数。
         self.assertEqual("deepseek-v4.1-flash", sample.model)
 
+    def test_cold_start_is_separable_from_model_time(self) -> None:
+        """外层 wall time 含冷启动，直接拿它跟 YonWork 常驻服务比就是误比。
+
+        实测外层 16.744s、内部 3.087s——13.6s 全是起进程。
+        两个数都得落到 ChatTurn 上，报告才拆得开。
+        """
+        turn = driver_with(PROBE_STDOUT).run_turn(benchmark_id="b1", prompt="hi")
+        self.assertEqual(2.088, turn.engine_seconds)  # 夹具里的 duration_ms
+        self.assertIsNotNone(turn.duration_seconds)
+        # 外层是真实测量的 wall time，不该被内部数字顶替
+        self.assertNotEqual(turn.engine_seconds, turn.duration_seconds)
+
+    def test_missing_inner_duration_stays_none_instead_of_zero(self) -> None:
+        """缺了就留空。用 0 顶替会把冷启动算成满额，读成「这产品全是冷启动」。"""
+        records = json.loads(PROBE_STDOUT)
+        for record in records:
+            record.pop("duration_ms", None)
+        turn = driver_with(json.dumps(records)).run_turn(benchmark_id="b1", prompt="hi")
+        self.assertIsNone(turn.engine_seconds)
+
+    def test_yonwork_leaves_engine_time_empty(self) -> None:
+        """常驻服务没有每轮起进程这回事，不能拿 duration 填进去冒充。"""
+        turn = ChatTurn(
+            benchmark_id="b1", session_key="s", prompt="p",
+            started_at="2026-09-21T00:00:00Z", ended_at="2026-09-21T00:00:03Z",
+            duration_seconds=3.0,
+        )
+        self.assertIsNone(turn.engine_seconds)
+
     def test_cost_is_not_read_from_total_cost_usd(self) -> None:
         """`total_cost_usd` 在这个构建里恒为 0，记下来就是假的成本数据。
 
@@ -259,6 +291,70 @@ class WorkBuddyCommandTests(unittest.TestCase):
         self.assertEqual(set(env) - {"WSLENV"}, declared)
         self.assertIn("CODEBUDDY_CONFIG_DIR/p", env["WSLENV"])
         self.assertIn("ELECTRON_RUN_AS_NODE", env["WSLENV"].split(":"))
+
+
+class WorkBuddyPreflightTests(unittest.TestCase):
+    """起不了 Windows 进程时，报错必须指向真正的原因。"""
+
+    def test_container_worker_is_told_to_use_the_host_worker(self) -> None:
+        # 容器里 /mnt/d 本来就不存在，所以先查安装目录的话，报出来的是
+        # 「设 BENCH_WORKBUDDY_HOME」——把人引去设一个设了也没用的变量。
+        with patch("runner.drivers.workbuddy._interop_available", return_value=False):
+            with patch("runner.drivers.workbuddy.Path") as path:
+                path.return_value.is_file.return_value = True  # /.dockerenv 存在
+                with self.assertRaises(DriverError) as caught:
+                    list(WorkBuddyDriver().preflight())
+        message = str(caught.exception)
+        self.assertIn("host_worker.sh", message)
+        self.assertNotIn("BENCH_WORKBUDDY_HOME", message)
+
+    def test_plain_linux_gets_the_interop_reason_not_the_container_one(self) -> None:
+        with patch("runner.drivers.workbuddy._interop_available", return_value=False):
+            with patch("runner.drivers.workbuddy.Path") as path:
+                path.return_value.is_file.return_value = False  # 没有 /.dockerenv
+                with self.assertRaises(DriverError) as caught:
+                    list(WorkBuddyDriver().preflight())
+        self.assertIn("WSL interop", str(caught.exception))
+        self.assertNotIn("docker compose", str(caught.exception))
+
+    def test_interop_probe_accepts_both_kernel_names(self) -> None:
+        """新内核叫 WSLInterop-late，老的叫 WSLInterop，通配两个都要认。"""
+        for name in ("WSLInterop", "WSLInterop-late"):
+            with tempfile.TemporaryDirectory() as folder:
+                registry = Path(folder)
+                (registry / name).touch()
+                with patch("runner.drivers.workbuddy.Path", return_value=registry):
+                    self.assertTrue(workbuddy._interop_available(), name)
+
+    def test_missing_interop_registry_is_not_an_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            missing = Path(folder) / "nope"
+            with patch("runner.drivers.workbuddy.Path", return_value=missing):
+                self.assertFalse(workbuddy._interop_available())
+
+
+class WorkBuddySettingTests(unittest.TestCase):
+    def test_env_file_is_read_when_the_variable_is_not_exported(self) -> None:
+        """容器靠 Compose 注环境变量，宿主机 Worker 和 CLI 只有 .env。
+
+        只读 os.environ 的话，.env 里写的值会被静默忽略，
+        表现为「明明配了却还是去找默认路径」。
+        """
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BENCH_WORKBUDDY_HOME", None)
+            with patch(
+                "runner.drivers.workbuddy.load_env_file",
+                return_value={"BENCH_WORKBUDDY_HOME": "/mnt/e/WB"},
+            ):
+                self.assertEqual("/mnt/e/WB", workbuddy._setting("BENCH_WORKBUDDY_HOME"))
+
+    def test_exported_variable_wins_over_env_file(self) -> None:
+        with patch.dict(os.environ, {"BENCH_WORKBUDDY_HOME": "/mnt/f/WB"}):
+            with patch(
+                "runner.drivers.workbuddy.load_env_file",
+                return_value={"BENCH_WORKBUDDY_HOME": "/mnt/e/WB"},
+            ):
+                self.assertEqual("/mnt/f/WB", workbuddy._setting("BENCH_WORKBUDDY_HOME"))
 
 
 if __name__ == "__main__":

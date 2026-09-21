@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..client import ChatError, ChatTimeout
+from ..db import load_env_file, project_root
 from ..models import ChatTurn, JsonObject, UsageSample, now_iso
 from .base import DriverError, UsageCollection
 
@@ -47,14 +48,53 @@ _FLAGS = (
 )
 
 
+def _setting(name: str) -> str:
+    """先看环境变量，再看 `.env`。
+
+    容器 Worker 的配置由 Compose 以环境变量注入，宿主机 Worker 和 CLI 则只有 `.env`。
+    只读 `os.environ` 的话，`.env` 里写的 `BENCH_WORKBUDDY_*` **会被静默忽略**，
+    表现为「明明配了却还是去找默认路径」。口径跟 NewApiConfig.load 保持一致。
+    """
+    found = os.environ.get(name, "").strip()
+    if found:
+        return found
+    return load_env_file(project_root() / ".env").get(name, "").strip()
+
+
+def _interop_available() -> bool:
+    """这个进程能不能起 Windows 程序。
+
+    查的是 WSL interop 本身，不是「在不在容器里」——真正的前提是
+    `binfmt_misc` 里注册了 Windows 可执行格式。容器只是最常见的一种缺失场景，
+    关掉 interop 的 WSL、纯 Linux 机器同样跑不了，报错得一视同仁。
+    名字在新内核上是 `WSLInterop-late`，老的是 `WSLInterop`，所以用通配。
+    """
+    registry = Path("/proc/sys/fs/binfmt_misc")
+    return registry.is_dir() and any(registry.glob("WSLInterop*"))
+
+
+def _no_interop_reason() -> str:
+    if Path("/.dockerenv").is_file():
+        return (
+            "当前 Worker 跑在容器里，**起不了 Windows 进程**，也看不到 /mnt/d。"
+            "要从 Web 控制台跑 WorkBuddy，Worker 得在宿主机原生起："
+            "先 `docker compose stop worker`，再 `./scripts/host_worker.sh`。"
+            "（两个 Worker 不会同时跑：MySQL 咨询锁会拦住后启动的那个。）"
+        )
+    return (
+        "这台机器没有 WSL interop（/proc/sys/fs/binfmt_misc 里没有 WSLInterop*），"
+        "起不了 WorkBuddy.exe。WorkBuddy 驱动只能在开了 interop 的 WSL 里跑。"
+    )
+
+
 def _default_config_dir() -> Path:
     """找 WorkBuddy 的配置目录。
 
     不硬编码 Windows 用户名——换台机器就废。显式设 `BENCH_WORKBUDDY_CONFIG_DIR`
-    最稳；没设就在 `/mnt/c/Users/*/.workbuddy` 里找，**必须唯一**，
-    多个候选时宁可报错也不挑一个，挑错了会读到另一个账号的产品配置。
+    最稳（环境变量或 `.env` 都行）；没设就在 `/mnt/c/Users/*/.workbuddy` 里找，
+    **必须唯一**，多个候选时宁可报错也不挑一个，挑错了会读到另一个账号的产品配置。
     """
-    configured = os.environ.get("BENCH_WORKBUDDY_CONFIG_DIR", "").strip()
+    configured = _setting("BENCH_WORKBUDDY_CONFIG_DIR")
     if configured:
         return Path(configured)
     found = sorted(Path("/mnt/c/Users").glob("*/.workbuddy")) if Path("/mnt/c/Users").is_dir() else []
@@ -113,9 +153,13 @@ class WorkBuddyDriver:
     # ---- Driver 协议 ----
 
     def preflight(self) -> Iterator[str]:
-        home = self._home or Path(
-            os.environ.get("BENCH_WORKBUDDY_HOME", "/mnt/d/WorkBuddy")
-        )
+        # 这一条必须排在最前面。容器里 /mnt/d 本来就不存在，先查安装目录的话
+        # 报出来的是「安装目录不存在，设 BENCH_WORKBUDDY_HOME」——
+        # 把人引去设一个设了也没用的变量，真正的原因（起不了 Windows 进程）反而不说。
+        if not _interop_available():
+            raise DriverError(_no_interop_reason())
+
+        home = self._home or Path(_setting("BENCH_WORKBUDDY_HOME") or "/mnt/d/WorkBuddy")
         if not home.is_dir():
             raise DriverError(f"WorkBuddy 安装目录不存在：{home}（设 BENCH_WORKBUDDY_HOME）")
         launcher = home / "WorkBuddy.exe"
@@ -326,11 +370,12 @@ def _build_turn(
         started_at=started_at,
         ended_at=now_iso(),
         # 外层 wall time，含 CLI 冷启动，更接近用户体验——所以拿它做耗时断言。
-        # 内部的 duration_ms / duration_api_ms 原样留在 transcript 里，
-        # 想拆「模型耗时 vs 冷启动」时去那儿取，两者都没丢。
         # first_delta 留空：json 模式一次性吐完，本来就没有流式首字这回事
         #（要首字得换 stream-json，那是另一条路）。
         duration_seconds=duration,
+        # CLI 自报的内部耗时。外层减它就是冷启动，实测占 13.6s / 16.7s——
+        # 不把这个数单独拎出来，跟 YonWork 常驻服务比耗时就是在比冷启动。
+        engine_seconds=_seconds(result.get("duration_ms")),
         run_id=session_id if isinstance(session_id, str) else None,
         answer=answer if isinstance(answer, str) else None,
         terminated_by=f"result:{subtype}" if isinstance(subtype, str) else "result",
@@ -392,3 +437,13 @@ def _int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return int(value)
+
+
+def _seconds(millis: Any) -> float | None:
+    """CLI 自报的毫秒 → 秒。缺了就留 None，**不要用外层耗时顶替**。
+
+    顶替的话冷启动会算成 0，看起来就像「这个产品没有冷启动开销」——
+    而那正是这个字段存在的唯一目的。
+    """
+    value = _int(millis)
+    return None if value is None else round(value / 1000, 3)

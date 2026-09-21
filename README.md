@@ -82,6 +82,39 @@ docker compose up -d --build
 
 CLI（`python -m runner`）仍是单模式，一次跑一个批次；跨模式编排只在 Web 控制台。
 
+### 跑 WorkBuddy 要把 Worker 换到宿主机
+
+WorkBuddy 每轮起一个 Windows 进程（`WorkBuddy.exe`），而 compose 里的 worker
+既没有 WSL interop 也看不到 `/mnt/d`，**容器 Worker 永远跑不了 WorkBuddy**。
+要做 YonWork × WorkBuddy 的对比，两个产品得由同一个 Worker 串行跑完：
+
+```bash
+docker compose stop worker      # 容器 Worker 持锁，不停它宿主机这个起不来
+docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: unless-stopped
+./scripts/host_worker.sh        # 前台跑，Ctrl-C 停止（当前这一轮会先收尾）
+```
+
+切回容器 Worker：Ctrl-C 结束宿主机进程，再 `docker compose start worker`。
+
+始终只有一个 Worker 在跑：MySQL 咨询锁会拦住后启动的那个。这是正确性前提
+不是运维约定——并发跑批会让 NewAPI 后台用量按时间窗张冠李戴。
+
+`BENCH_WORKBUDDY_HOME` / `BENCH_WORKBUDDY_CONFIG_DIR` 可留空，默认去
+`/mnt/d/WorkBuddy` 和 `/mnt/c/Users/*/.workbuddy` 找；后者**必须唯一**，
+有多个候选时驱动报错而不是挑一个。
+
+### 跨产品比耗时前先看「其中模型」那一列
+
+报告页把耗时拆成三个数，因为两个产品的形状根本不同：
+
+| | 平均耗时（外层 wall） | 其中模型 | 其中冷启动 |
+|---|---|---|---|
+| YonWork（常驻 Host API） | 有 | 不适用 | 不适用 |
+| WorkBuddy（每轮一个进程） | 有 | 产品自报 | 外层减自报 |
+
+直接拿外层相减等于在比冷启动。YonWork 那两列显示「不适用」而不是 0——
+填 0 会读成「冷启动开销为零」，那是个结论不是事实。
+
 ## 目录
 
 | 目录/文件 | 职责 |

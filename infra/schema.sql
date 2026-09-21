@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS runs (
     requested_model   VARCHAR(128) NULL,
     duration_ms       INT NULL,
     first_delta_ms    INT NULL,
+    -- 产品自报的内部耗时，不含每轮起进程的冷启动；冷启动 = duration_ms - engine_ms。
+    -- 只有 WorkBuddy 这类「每轮一个进程」的产品有值，YonWork 常驻服务留 NULL。
+    -- ⚠️ 与 runner/ingest.py 的按需 ALTER 是两份，加列时两处都要改。
+    engine_ms         INT NULL,
     terminated_by     VARCHAR(64)  NULL,
     stop_reason       VARCHAR(64)  NULL,
     tool_call_count   INT NULL,

@@ -38,8 +38,12 @@
 
 <table style="margin-top:12px">
   <tr>
-    <th>产品 / 模型</th><th style="width:34%">判定分布</th>
-    <th class="num">轮次</th><th class="num">平均耗时</th><th class="num">最慢</th>
+    <th>产品 / 模型</th><th style="width:30%">判定分布</th>
+    <th class="num">轮次</th>
+    <th class="num">平均耗时<br><span style="font-weight:400;font-size:11px">外层 wall</span></th>
+    <th class="num">其中模型<br><span style="font-weight:400;font-size:11px">产品自报</span></th>
+    <th class="num">其中冷启动<br><span style="font-weight:400;font-size:11px">每轮起进程</span></th>
+    <th class="num">最慢</th>
     <th class="num">总 token<br><span style="font-weight:400;font-size:11px">端上优先，缺则后台</span></th><th class="num">批次</th>
   </tr>
   {% for row in modes %}
@@ -51,12 +55,28 @@
     <td>{{ ui.verdict_bar(row, verdict_order) }}</td>
     <td class="num">{{ row.total | int }}</td>
     <td class="num">{{ row.avg_ms | ms }}</td>
+    {# 常驻服务没有「每轮起进程」这回事，两列留白而不是填 0——
+       填 0 会读成「冷启动开销为零」，那是个结论，不是事实。 #}
+    <td class="num {% if not row.engine_rows %}missing{% endif %}">
+      {{ row.avg_engine_ms | ms if row.engine_rows else '不适用' }}
+    </td>
+    <td class="num {% if not row.engine_rows %}missing{% endif %}">
+      {{ row.avg_startup_ms | ms if row.engine_rows else '不适用' }}
+    </td>
     <td class="num">{{ row.max_ms | ms }}</td>
     <td class="num {% if not row.total_tokens %}missing{% endif %}">{{ row.total_tokens | num }}</td>
     <td class="num">{{ row.batch_count | int }}</td>
   </tr>
   {% endfor %}
 </table>
+
+<p class="hint" style="margin-top:14px">
+  ⚠️ <strong>跨产品比耗时前先看后两列。</strong>「平均耗时」是外层 wall time，
+  对 WorkBuddy 这类<strong>每轮起一个新进程</strong>的产品，里面含着冷启动；
+  YonWork 走常驻 Host API，没有这一段，所以两列显示「不适用」。
+  直接拿外层相减等于在比冷启动——实测 WorkBuddy 外层 16.7s 里有 13.6s 是冷启动，
+  是模型耗时的 4 倍多。要比模型本身，看「其中模型」那一列。
+</p>
 
 <p class="hint" style="margin-top:14px">
   「端上采到用量的轮次」是 {{ usage_rows }}/{{ total }}：端上

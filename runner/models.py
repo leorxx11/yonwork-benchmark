@@ -135,6 +135,13 @@ class ChatTurn:
     run_id: str | None = None
     answer: str | None = None
     first_delta_seconds: float | None = None
+    # 产品**自报**的内部执行耗时，不含每轮起进程的冷启动。
+    # `duration_seconds` 一律是外层 wall time（更接近用户感受，所以耗时断言用它）；
+    # 两个都留着才能把冷启动拆出来：冷启动 = duration - engine。
+    # WorkBuddy 实测外层 16.744s、内部只有 3.087s，**13.6s 全是冷启动**，
+    # 直接拿外层跟 YonWork 的常驻服务比就是误比。
+    # YonWork 没有每轮进程这回事，这个字段留空，不要拿 duration 填进去冒充。
+    engine_seconds: float | None = None
     terminated_by: str | None = None
     stop_reason: str | None = None
     final_state: str | None = None

@@ -138,8 +138,10 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 `runner/drivers/workbuddy.py` 已经实测跑通（见七-3.2），
 **WorkBuddy 那两个模式终于和 YonWork 那两个走同一条自动通路、同一套断言**——
 「四个模式里有一半数据质量低一档」这个缺口到此补上。
-先别急着删：目前只验证过默认模型、单轮、关工具那一种组合，
-等多模型和工具调用的 case 也跑过一轮，再决定它的去留。
+先别急着删：**2026-09-21 更新**——Web 执行链路已打通（宿主机 Worker，见七-3.4），
+跨产品横向对比也实测跑出来了，但**仍然只验证过关工具那一种组合**。
+多模型这一半现在有工具了（跨模式一键提交，见七-3.3），**工具调用的 case 还没跑过**。
+所以去留条件只剩一条：**跑一轮开着工具的 case**，再决定。
 
 **`yonwork_usage/` 先别删**：它读 `llm-observer/*.jsonl`，`runner/sessionlog.py` 读
 `sessions/*.jsonl`，**是两个不同的文件**。取 token 已被覆盖，但 llm-observer 独有
@@ -599,7 +601,9 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
      两个数都存着就是为了能把这一段拆出来。
    - ⚠️ **容器里的 Worker 跑不了它**：它要起 Windows 进程，而 compose 里的 worker
      既看不到 `/mnt/d` 也没有 WSL interop（已实测确认）。
-     要从 Web 控制台跑 WorkBuddy，Worker 得在宿主机原生起（`python -m runner.worker`）。
+     要从 Web 控制台跑 WorkBuddy，Worker 得在宿主机原生起——
+     用 `./scripts/host_worker.sh`（见 3.4），别直接敲 `python -m runner.worker`，
+     脚本还顺带查了代理、`.env` 和容器 Worker 是否还占着锁。
      控制台的产品选项上已经写了这个条件。
 
 3.3 **跨模式一键编排。已完成 2026-09-21。**
@@ -639,6 +643,53 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
 
    **仍是单模式的：CLI（`python -m runner`）**。一次跑一个批次，没打算跟着改——
    编排属于控制台，CLI 的定位是单批次和 `--dry-run` 前置检查。
+
+3.4 **WorkBuddy 的 Web 执行链路 + 跨产品横向对比。已完成 2026-09-21。**
+
+   **宿主机 Worker**：`./scripts/host_worker.sh`。容器 Worker 没有 WSL interop、
+   看不到 `/mnt/d`，**永远跑不了 WorkBuddy**；要做 YonWork × WorkBuddy 对比，
+   两个产品必须由同一个 Worker 串行跑完，那就只能是宿主机这个。
+   仍然只允许一个 Worker（MySQL 咨询锁），脚本会在容器 Worker 还活着时
+   直接退出并告诉你敲哪条命令。
+   ⚠️ 切过去之后**别用裸 `docker compose up -d`**——worker 是
+   `restart: unless-stopped`，会被重新拉起来抢锁。只起 Web 用 `up -d web`。
+
+   **报错指向真正的原因**：`WorkBuddyDriver.preflight` 第一件事是查 WSL interop
+   （`/proc/sys/fs/binfmt_misc/WSLInterop*`，新内核叫 `-late`），不是查安装目录。
+   顺序反了的话容器里报的是「安装目录不存在，设 `BENCH_WORKBUDDY_HOME`」，
+   **把人引去设一个设了也没用的变量**。
+
+   **`.env` 现在真的会被读到**：`BENCH_WORKBUDDY_*` 以前只读 `os.environ`，
+   而容器靠 Compose 注入、宿主机 Worker 和 CLI 只有 `.env`——
+   写在 `.env` 里的值**被静默忽略**，表现为「明明配了还是走默认路径」。
+   已改成先环境变量后 `.env`（口径同 `NewApiConfig.load`）。
+
+   **耗时拆成三个数**（`ChatTurn.engine_seconds` → `runs.engine_ms`）：
+   外层 wall time 一律是 `duration_seconds`（耗时断言仍用它，最接近用户感受），
+   `engine_seconds` 是**产品自报**的内部耗时，冷启动 = 两者之差。
+   YonWork 常驻服务没有每轮起进程这回事，这个字段**留空**，报告显示「不适用」
+   而不是 0——填 0 会读成「冷启动为零」，那是结论不是事实。
+   旧库靠 `ingest._ensure_engine_column` 按需 ALTER；**这一条不吞异常**
+   （列缺了每条 INSERT 都会失败），和 `_widen_usage_source` 的处理刻意不同。
+
+   **实测一轮（2026-09-21，宿主机 Worker，smoke × 1 轮，两个产品都用各自默认模型）**：
+
+   | | 外层 | 其中模型 | 其中冷启动 | token | 实际模型 |
+   |---|---|---|---|---|---|
+   | yonwork | 3.26s | 不适用 | 不适用 | 16,325 | deepseek-v4-flash |
+   | workbuddy | 8.26s | 4.92s | 3.34s | 3,460 | minimax-m3 |
+
+   ⚠️ **这组数只证明链路通了，不能当性能结论**：每个模式 n=1；
+   两边「默认模型」是**不同的模型**（deepseek-v4-flash vs minimax-m3），
+   所以这是「产品默认配置」的对比，不是同模型对比；
+   冷启动这次是 3.34s，而摸底那次是 13.6s——**冷启动不是常数**，
+   要下结论得按 2.6 的规矩报中位数 + 最小/最大。
+
+   **顺带抓到一个静默空列**：`workbuddy-cli` 早就在 `USAGE_SOURCES` 里，
+   却没进 `mode_summary` / `matrix` 的 COALESCE，WorkBuddy 那行 token **整列是空的**，
+   跟六-3 端上漏记长得一模一样。已修，并加了结构性回归
+   （`web/tests/test_queries.py`：来源表里的每个值都必须出现在报告查询里），
+   **接新产品时忘了改查询会当场红**，不用等跑完对比才发现。
 
 ⚠️ **`web/tests` 以前不是真离线的**（2026-09-21 发现并修）：`_render` 一律调
 `_active_job()` → `job_store.ensure_schema()`，本机 MySQL 恰好起着时它会**真的连库执行 DDL**。
