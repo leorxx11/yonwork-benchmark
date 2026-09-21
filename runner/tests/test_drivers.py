@@ -299,6 +299,39 @@ class WorkBuddyCommandTests(unittest.TestCase):
         self.assertEqual("", command[command.index("--tools") + 1])
         self.assertNotIn("--tools", driver_with(PROBE_STDOUT, allow_tools=True)._command("b1", "hi"))
 
+    def test_tool_calls_come_from_top_level_function_call_records(self) -> None:
+        """工具调用是顶层记录，不是 assistant 消息里的 content 块。
+
+        2026-09-21 实测形状：
+        `{"type": "function_call", "name": "Bash", "callId": "call_…"}`。
+        只盯 content 块的话 tool_calls 恒为空，而 event_counts 里
+        明明有 function_call:1——模型调了工具却记成没调。
+        """
+        records = json.loads(PROBE_STDOUT)
+        records.insert(1, {
+            "type": "function_call", "name": "Bash",
+            "callId": "call_x", "arguments": '{"command": "ls -la"}',
+        })
+        turn = driver_with(json.dumps(records), allow_tools=True).run_turn(
+            benchmark_id="b1", prompt="hi"
+        )
+        self.assertEqual(("Bash",), turn.tool_calls)
+        self.assertEqual(1, turn.event_counts.get("function_call"))
+
+    def test_permission_mode_only_opens_up_when_tools_are_explicitly_allowed(self) -> None:
+        """bypassPermissions 是真放权：跑批期间模型能在本机执行任意命令。
+
+        所以它**只跟显式的 allow_tools 走**，默认那条路必须还是 dontAsk。
+        （dontAsk 的语义是「不问，直接拒」——headless 弹不了窗，
+        开着工具还用它的话模型会回「Bash 工具被拒绝执行权限」，实测过。）
+        """
+        off = driver_with(PROBE_STDOUT)._command("b1", "hi")
+        on = driver_with(PROBE_STDOUT, allow_tools=True)._command("b1", "hi")
+        self.assertEqual("dontAsk", off[off.index("--permission-mode") + 1])
+        self.assertEqual("bypassPermissions", on[on.index("--permission-mode") + 1])
+        # 只能出现一次，否则以哪个为准取决于 CLI 的解析顺序
+        self.assertEqual(1, on.count("--permission-mode"))
+
     def test_enabling_tools_raises_max_turns(self) -> None:
         """1 轮只够直接作答。开了工具就必然不够：调工具一轮、作答又一轮。
 

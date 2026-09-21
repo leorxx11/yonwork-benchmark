@@ -138,10 +138,12 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 `runner/drivers/workbuddy.py` 已经实测跑通（见七-3.2），
 **WorkBuddy 那两个模式终于和 YonWork 那两个走同一条自动通路、同一套断言**——
 「四个模式里有一半数据质量低一档」这个缺口到此补上。
-先别急着删：**2026-09-21 更新**——Web 执行链路已打通（宿主机 Worker，见七-3.4），
-跨产品横向对比也实测跑出来了，但**仍然只验证过关工具那一种组合**。
-多模型这一半现在有工具了（跨模式一键提交，见七-3.3），**工具调用的 case 还没跑过**。
-所以去留条件只剩一条：**跑一轮开着工具的 case**，再决定。
+**2026-09-21：去留的前置条件已经全部满足，可以决定了。**
+Web 执行链路打通（宿主机 Worker，七-3.4）、跨模式一键提交（七-3.3）、
+工具调用用例两个产品都实测 Pass（七-3.5）。
+当初「等多模型和工具调用的 case 也跑过一轮」的条件到此清掉，
+`runner/drivers/workbuddy.py` 这条自动通路已经覆盖了 WorkBuddy 的那两个模式。
+**剩下的是一个决定，不是一件待办**——要不要留着那套人工跑批 GUI 当兜底。
 
 **`yonwork_usage/` 先别删**：它读 `llm-observer/*.jsonl`，`runner/sessionlog.py` 读
 `sessions/*.jsonl`，**是两个不同的文件**。取 token 已被覆盖，但 llm-observer 独有
@@ -473,8 +475,12 @@ POC 清单前三项可划掉。API 侧的被减数现成：`first_delta_ms` 已�
    S7 与 S1 的首字滞后中位数接近，也不能排除历史影响：该指标混入后端生成时间；
    `history_turns` 实际记 DOM 消息节点，S1 为 2，S7 为 12／14／16，三次历史在累积。
 
-   ⚠️ **S5/S6 的 `tool_calls` 全是 0**，模型压根没调工具，
-   所以它们只是两个普通短文本场景，**不能当「工具场景没问题」的证据**。
+   ⚠️ **S5/S6 的 `tool_calls` 全是 0**，所以它们不能当「工具场景没问题」的证据。
+   **2026-09-21 更正原因**：当时写的是「模型压根没调工具」，这个推论站不住——
+   探针的 `tool_calls` 取自 `turn.tool_calls`（`probe.py:97`），而 YonWork 的
+   SSE **根本不上报工具调用**（见七-3.5 实测）。0 只说明这条通路看不见，
+   **既不能证明调了也不能证明没调**。结论（不能当证据）不变，理由换掉。
+   要重测的话现在有办法了：`enrich()` 会从会话 JSONL 补齐。
    ⚠️ **P3 的定义是我写错了**：归一化完成滞后会变负（UI 最后一次变化早于 SSE 终止），
    负数之间求倍率没意义。如实记为「算不出来」，没有追认新指标再声称通过。
 
@@ -690,6 +696,55 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
    跟六-3 端上漏记长得一模一样。已修，并加了结构性回归
    （`web/tests/test_queries.py`：来源表里的每个值都必须出现在报告查询里），
    **接新产品时忘了改查询会当场红**，不用等跑完对比才发现。
+
+3.5 **工具调用用例。已完成 2026-09-21。**
+
+   `cases/catalog.yaml` 新增 `tools` 用例集；断言用 `Expectations.min_tool_calls`
+   （不声明只记录，声明了才判，规矩同 `max_input_tokens`）。
+   判不过要分清是谁的问题：工具开着模型没调 → **Fail**；
+   我们自己把工具关了却跑要求用工具的 Case → **Invalid**。
+   后者记 Fail 等于拿自己的配置错误去算产品的失败率（二-4）。
+
+   **`tool-calls` 这条以前恒 PASS**，采了不判，和 ErrorCalls 当初一模一样。
+
+   ⚠️ **两个产品各有一个「模型明明调了工具、我们却记成 0」的观测盲区**，
+   都是跑起来才撞出来的，而且症状完全一样——**新断言会稳定误判成产品没调工具**：
+
+   | 产品 | 盲区 | 真实形状 |
+   |---|---|---|
+   | YonWork | `/api/chat/send` 的 SSE **只有 text 块** | 会话 JSONL 里有 `{"type":"toolCall"}` + `toolResult` |
+   | WorkBuddy | 只盯 assistant 消息的 content 块 | 工具调用是**顶层记录** `{"type":"function_call","name":"Bash"}` |
+
+   YonWork 那条靠 Driver 协议新增的 `enrich()` 补：跑完从会话 JSONL 补齐，
+   SSE 给了就以主通路为准，补不到照实留空。
+   ⚠️ `batch` 对 `enrich` 的 `AttributeError` **不吞**——驱动少实现协议方法是
+   编程错误，吞掉会让新驱动静默少一份原材料。
+
+   **WorkBuddy 还有两个配置让工具用例永远跑不通**：
+   - `--max-turns 1` 和工具天然冲突（调工具一轮、作答又一轮）。症状极难查：
+     stdout 空白、`Max turns (1) exceeded` 只在 stderr、**退出码仍是 0**。
+     已改成按 `allow_tools` 取值，并把 stderr 带进报错——原来只说
+     「没有输出（退出码 0）」，CLI 写的原因全丢了。
+   - `--permission-mode dontAsk` 的语义是「不问，**直接拒**」。headless `-p` 弹不了窗，
+     所以开着工具用它，模型会老老实实回「Bash 工具被拒绝执行权限」，一次都调不成。
+
+   ⚠️ **`bypassPermissions` 只跟显式的 `allow_tools` 走**（2026-09-21 与用户确认）。
+   那是真放权：勾选的那一批跑批期间，模型可以在这台 Windows 上执行任意命令。
+   默认关闭，前置检查里会打一行警告。用例 prompt 是自己写的、Git 版本化的，
+   所以风险可控但不为零——**不要因为「方便」就把它设成默认**。
+
+   **实测（Web 提交，tools × 1 轮，两个产品都开工具）**：
+
+   | | 判定 | 工具 | 外层 | 其中模型 | token | 实际模型 |
+   |---|---|---|---|---|---|---|
+   | yonwork | Pass | 1（Bash 类） | 10.31s | 不适用 | 33,752 | deepseek-v4-flash |
+   | workbuddy | Pass | 1（`Bash`） | 36.38s | 33.93s | 25,683 | minimax-m3 |
+
+   ⚠️ 同样是 n=1、默认模型不同，**只证明链路和断言通了**，不是性能结论。
+   ⚠️ WorkBuddy 的「当前目录」是 `\\wsl.localhost\...` UNC 路径，
+   CMD 不支持、会回落到 Windows 目录（stderr 里有警告）。这一轮它实际列的
+   还是本仓库，但**跨产品比「当前目录」类用例前要先把工作目录定死**，
+   否则两边问的不是同一个目录。这条没解决，只是记下来。
 
 ⚠️ **`web/tests` 以前不是真离线的**（2026-09-21 发现并修）：`_render` 一律调
 `_active_job()` → `job_store.ensure_schema()`，本机 MySQL 恰好起着时它会**真的连库执行 DDL**。

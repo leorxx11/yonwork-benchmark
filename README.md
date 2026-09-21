@@ -103,6 +103,16 @@ docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: u
 `/mnt/d/WorkBuddy` 和 `/mnt/c/Users/*/.workbuddy` 找；后者**必须唯一**，
 有多个候选时驱动报错而不是挑一个。
 
+### 工具调用用例
+
+`cases/catalog.yaml` 的 `tools` 用例集用 `min_tool_calls` 断言「模型真的调了工具」，
+而不是「答案看起来像调过工具」。不声明就只记录不判定。
+
+⚠️ **跑 WorkBuddy 的工具用例必须勾「允许调用工具」**，否则驱动传 `--tools ''`，
+这一组会判 Invalid（跑法不对，不是产品的错）。勾上之后驱动会用
+`--permission-mode bypassPermissions`——**那一批跑批期间模型可以在本机执行任意命令**，
+前置检查里会打警告。YonWork 不受这个开关影响：它的工具由智能体配置决定。
+
 ### 跨产品比耗时前先看「其中模型」那一列
 
 报告页把耗时拆成三个数，因为两个产品的形状根本不同：

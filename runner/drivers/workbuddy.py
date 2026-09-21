@@ -29,8 +29,17 @@ BASE_ARGS = (
     "--setting-sources", "user",
     "--strict-mcp-config",
     "--no-plugin-management",
-    "--permission-mode", "dontAsk",
 )
+
+# 权限模式随工具开关走。
+# `dontAsk` 的语义是「不问，直接拒」——headless `-p` 模式弹不了窗，
+# 所以开了工具还用它的话，模型会老老实实回「Bash 工具被拒绝执行权限」，
+# 一次工具都调不成（2026-09-21 实测）。
+# ⚠️ `bypassPermissions` 是真的放权：那一批跑批期间模型可以在这台 Windows 上
+# 执行任意命令。所以它**只跟着显式的 allow_tools 走**，默认关闭，
+# 用户不主动勾选/加 --allow-tools 就永远不会启用。
+PERMISSION_WITHOUT_TOOLS = "dontAsk"
+PERMISSION_WITH_TOOLS = "bypassPermissions"
 
 # `--max-turns` 不能写死 1。1 轮只够模型直接回答；**开了工具就必然不够**——
 # 调工具算一轮、拿到结果再答又一轮，于是 CLI 以
@@ -181,9 +190,16 @@ class WorkBuddyDriver:
         yield f"WorkBuddy：{home}（配置 {config_dir}）"
         yield f"指定模型：{self.model_query}" if self.model_query else "未指定模型，用产品默认"
         if self.allow_tools:
-            yield f"已允许工具，--max-turns {TURNS_WITH_TOOLS}（1 轮不够：调工具和作答各占一轮）"
+            yield (
+                f"⚠️ 已允许工具，--permission-mode {PERMISSION_WITH_TOOLS}"
+                f"、--max-turns {TURNS_WITH_TOOLS}"
+                "：本批跑批期间模型可在本机执行任意命令"
+            )
         else:
-            yield f"已关闭工具（--tools ''），纯文本基准，--max-turns {TURNS_WITHOUT_TOOLS}"
+            yield (
+                f"已关闭工具（--tools ''），纯文本基准，"
+                f"--max-turns {TURNS_WITHOUT_TOOLS}、--permission-mode {PERMISSION_WITHOUT_TOOLS}"
+            )
 
     def session_key(self, benchmark_id: str) -> str:
         """直接用 BenchmarkId 当 `--session-id`。
@@ -256,8 +272,9 @@ class WorkBuddyDriver:
         cli = "\\".join((str(self._home).replace("/mnt/d", "D:"), "resources",
                          "app.asar.unpacked", "cli", "bin", "codebuddy"))
         turns = TURNS_WITH_TOOLS if self.allow_tools else TURNS_WITHOUT_TOOLS
+        mode = PERMISSION_WITH_TOOLS if self.allow_tools else PERMISSION_WITHOUT_TOOLS
         command = [str(self._home / "WorkBuddy.exe"), cli, *BASE_ARGS]
-        command += ["--max-turns", str(turns)]
+        command += ["--max-turns", str(turns), "--permission-mode", mode]
         if not self.allow_tools:
             # 纯文本基准不让模型自己读写文件或执行命令。
             # 真要评测工具能力，应给那个 case 单独开，而不是全局放开。
@@ -378,6 +395,14 @@ def _build_turn(
         counts[f"{kind}:{role}" if isinstance(role, str) else kind] += 1
         if kind == "result":
             result = record
+            continue
+        if kind == "function_call":
+            # ⚠️ 工具调用是**顶层记录**，不是 assistant 消息里的 content 块。
+            # 只盯 content 块的话这里恒为空，而 event_counts 里明明有
+            # function_call:1——「模型明明调了工具，tool_calls 却是 0」，
+            # 跟 YonWork 那边 SSE 看不到工具是同一类观测盲区（2026-09-21 实测）。
+            name = record.get("name")
+            tool_calls.append(name if isinstance(name, str) and name else "unknown")
             continue
         if record.get("role") != "assistant":
             continue
