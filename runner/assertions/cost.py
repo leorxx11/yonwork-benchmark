@@ -3,13 +3,6 @@ from __future__ import annotations
 from ..models import Check, ChatTurn, Expectations, Layer, UsageSample, Verdict
 
 
-# 最小 prompt（`Reply with exactly: PONG`）实测 inputTokens = 20832，
-# 也就是每轮约 20k 系统提示词底噪。成本断言的阈值都以它为基准。
-SYSTEM_PROMPT_BASELINE_INPUT_TOKENS = 20832
-
-# 超过底噪这么多倍就算跳变，需要人看一眼（多半是上下文没清干净或系统提示词涨了）。
-INPUT_TOKEN_JUMP_FACTOR = 2.0
-
 # 能精确对上某一轮的匹配方式。其余（时间窗）都要留痕。
 EXACT_MATCHES = frozenset({"run-id", "idempotency-key"})
 
@@ -72,19 +65,33 @@ def check_cost(
             Check.skipped(Layer.COST, "usage-match", f"匹配方式：{usage.match}（非精确）")
         )
 
+    # 这里曾经是「全局底噪 20832 × 2」。实测数据证明那个口径不成立，别改回去：
+    #   · 同一句「你好！」，inputTokens 实测 5,514 ～ 16,238，3 倍差
+    #   · 长文本用例同一轮，session-jsonl 记 30,082、NewAPI 记 228,354，7.6 倍差
+    #     ——工具调用里反复重放文件，本来就该这么贵，却会被 41,664 的天花板判成 Fail
+    # 一个常数既管不了 5.5k 的寒暄也管不了 228k 的长文本，跨来源比更没有意义。
+    # 所以阈值按 Case 显式声明；没声明就只记录实测值，**不猜**。
+    # 记录下来的这些值就是将来定分位数基线的原料。
     input_tokens = usage.input_tokens
     if input_tokens is None:
-        checks.append(Check.skipped(Layer.COST, "input-token-jump", "用量里没有 inputTokens"))
+        checks.append(Check.skipped(Layer.COST, "input-tokens", "用量里没有 inputTokens"))
+    elif expectations.max_input_tokens is None:
+        checks.append(
+            Check.skipped(
+                Layer.COST,
+                "input-tokens",
+                f"未设阈值（实测 {input_tokens}，来源 {usage.source}）",
+            )
+        )
     else:
-        ceiling = SYSTEM_PROMPT_BASELINE_INPUT_TOKENS * INPUT_TOKEN_JUMP_FACTOR
-        jumped = input_tokens > ceiling
+        over = input_tokens > expectations.max_input_tokens
         checks.append(
             Check(
                 Layer.COST,
-                "input-token-jump",
-                Verdict.FAIL if jumped else Verdict.PASS,
-                f"inputTokens={input_tokens} / 底噪 {SYSTEM_PROMPT_BASELINE_INPUT_TOKENS}"
-                f" × {INPUT_TOKEN_JUMP_FACTOR:g}",
+                "input-tokens",
+                Verdict.FAIL if over else Verdict.PASS,
+                f"{input_tokens} / 阈值 {expectations.max_input_tokens}"
+                f"（来源 {usage.source}）",
             )
         )
 

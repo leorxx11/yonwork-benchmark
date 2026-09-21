@@ -139,8 +139,18 @@ def extract_tool_names(message: JsonObject) -> list[str]:
 
 
 def session_key_for(benchmark_id: str, agent_id: str = "main") -> str:
-    """每轮一个全新 sessionKey，等价于 PAD 里每轮点「新建任务」。"""
-    return f"agent:{agent_id}:{benchmark_id}"
+    """每轮一个全新 sessionKey，等价于 PAD 里每轮点「新建任务」。
+
+    **全小写**：sessionKey 带大写字母时，YonWork 会把同一轮拆成两条会话——
+    原样大小写那条只有标题（`displayName`），小写那条才有 `sessionId`
+    和真正的对话内容。界面上点开带标题的那条看不到回答，
+    看起来就像「用户消息和 Agent 回答不在一个界面」。实测 2026-09-21：
+    10 个含大写的 key 有 9 个分裂，4 个全小写的一个都没分裂。
+
+    只动 sessionKey。`idempotencyKey` / `runId` 保持原样大小写——
+    服务端不会小写它们，会话 JSONL 里也是原样记录，动了反而会打断用量匹配。
+    """
+    return f"agent:{agent_id}:{benchmark_id}".lower()
 
 
 class ChatClient:
@@ -163,11 +173,14 @@ class ChatClient:
         self._used_session_keys: set[str] = set()
 
     def _claim_session_key(self, session_key: str) -> None:
-        if session_key in self._used_session_keys:
+        # 按小写比对：服务端把只差大小写的两个 key 当成同一个会话，
+        # 这里要是区分大小写，就会放过一次服务端眼里的复用。
+        claim = session_key.lower()
+        if claim in self._used_session_keys:
             raise SessionKeyReuse(
                 f"sessionKey 已被用过：{session_key}；复用会让本轮看见上一轮上下文"
             )
-        self._used_session_keys.add(session_key)
+        self._used_session_keys.add(claim)
 
     def _payload(self, benchmark_id: str, prompt: str, session_key: str) -> JsonObject:
         payload: JsonObject = {

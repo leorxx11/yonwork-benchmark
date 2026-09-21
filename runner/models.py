@@ -67,6 +67,9 @@ class Expectations:
     json_parsable: bool = False
     max_seconds: float | None = None
     max_total_tokens: int | None = None
+    # 按 Case 定，不要指望一个全局常数：同一句「你好！」实测 5,514～16,238，
+    # 长文本用例同一轮 session-jsonl 记 30,082、NewAPI 记 228,354。
+    max_input_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

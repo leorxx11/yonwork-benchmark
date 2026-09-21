@@ -21,6 +21,7 @@ OPTIONAL_HEADERS = (
     "JsonParsable",
     "MaxSeconds",
     "MaxTotalTokens",
+    "MaxInputTokens",
 )
 MULTI_VALUE_SEPARATOR = "|"
 
@@ -138,6 +139,13 @@ def _parse_expectations(
         max_total_tokens=_parse_number(
             row.get("MaxTotalTokens"),
             "MaxTotalTokens",
+            row_number,
+            sheet_name,
+            cast=int,
+        ),
+        max_input_tokens=_parse_number(
+            row.get("MaxInputTokens"),
+            "MaxInputTokens",
             row_number,
             sheet_name,
             cast=int,

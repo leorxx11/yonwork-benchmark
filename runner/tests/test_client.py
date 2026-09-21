@@ -88,12 +88,29 @@ class SessionKeyTests(unittest.TestCase):
     def test_session_key_shape(self) -> None:
         self.assertEqual("agent:main:bench-1", session_key_for("bench-1"))
 
+    def test_session_key_is_lowercased(self) -> None:
+        """带大写的 sessionKey 会让 YonWork 把一轮拆成两条会话：
+
+        有标题的那条没有 sessionId 和对话内容，有内容的那条没有标题。
+        界面上看就是「用户消息和 Agent 回答不在一个界面」。实测过。
+        """
+        self.assertEqual(
+            "agent:main:bench-case01-r1", session_key_for("bench-Case01-r1")
+        )
+
     def test_client_refuses_to_reuse_a_session_key(self) -> None:
         """复用 sessionKey 会让本轮看见上一轮上下文，必须硬拦。"""
         client = ChatClient(HostEndpoint(base_url="http://127.0.0.1:1"))
         client._claim_session_key("agent:main:bench-1")
         with self.assertRaises(SessionKeyReuse):
             client._claim_session_key("agent:main:bench-1")
+
+    def test_reuse_check_ignores_case(self) -> None:
+        """服务端把只差大小写的两个 key 当成同一会话，这里也必须当成同一个。"""
+        client = ChatClient(HostEndpoint(base_url="http://127.0.0.1:1"))
+        client._claim_session_key("agent:main:bench-Case01")
+        with self.assertRaises(SessionKeyReuse):
+            client._claim_session_key("agent:main:bench-case01")
 
 
 class PayloadTests(unittest.TestCase):

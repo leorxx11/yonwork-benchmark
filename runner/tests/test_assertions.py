@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from runner.assertions import evaluate
-from runner.assertions.cost import SYSTEM_PROMPT_BASELINE_INPUT_TOKENS, check_cost
+from runner.assertions.cost import check_cost
 from runner.assertions.logs import check_logs
 from runner.client import ChatError, ChatTimeout
 from runner.models import (
@@ -154,24 +154,40 @@ class CostTests(unittest.TestCase):
         )
         self.assertEqual(Verdict.FAIL, verdict_of("duration", evaluation))
 
-    def test_input_token_baseline_is_not_a_jump(self) -> None:
-        """每轮约 20k 系统提示词底噪是常态，不该报警。"""
-        checks = check_cost(
-            make_turn(),
-            UsageSample(input_tokens=SYSTEM_PROMPT_BASELINE_INPUT_TOKENS, match="time-window"),
-            Expectations(),
-        )
-        jump = next(check for check in checks if check.name == "input-token-jump")
-        self.assertEqual(Verdict.PASS, jump.verdict)
+    def test_input_tokens_without_threshold_records_but_does_not_judge(self) -> None:
+        """没设阈值就只记录实测值。
 
-    def test_input_token_jump_is_fail(self) -> None:
+        以前这里是「全局底噪 20832 × 2」，实测证明不成立：长文本用例走 NewAPI
+        那一路 228,354，是工具调用反复重放文件的正常开销，却会被判成 Fail。
+        没有依据就别判——记下来的值正是将来定分位数基线的原料。
+        """
         checks = check_cost(
             make_turn(),
-            UsageSample(input_tokens=SYSTEM_PROMPT_BASELINE_INPUT_TOKENS * 5, match="run-id"),
+            UsageSample(input_tokens=228354, source="newapi", match="time-window"),
             Expectations(),
         )
-        jump = next(check for check in checks if check.name == "input-token-jump")
-        self.assertEqual(Verdict.FAIL, jump.verdict)
+        check = next(c for c in checks if c.name == "input-tokens")
+        self.assertIsNone(check.verdict)
+        self.assertIn("228354", check.detail)
+        self.assertIn("newapi", check.detail)
+
+    def test_input_tokens_over_case_threshold_is_fail(self) -> None:
+        checks = check_cost(
+            make_turn(),
+            UsageSample(input_tokens=40000, source="session-jsonl", match="run-id"),
+            Expectations(max_input_tokens=20000),
+        )
+        check = next(c for c in checks if c.name == "input-tokens")
+        self.assertEqual(Verdict.FAIL, check.verdict)
+
+    def test_input_tokens_under_case_threshold_is_pass(self) -> None:
+        checks = check_cost(
+            make_turn(),
+            UsageSample(input_tokens=16238, source="session-jsonl", match="run-id"),
+            Expectations(max_input_tokens=20000),
+        )
+        check = next(c for c in checks if c.name == "input-tokens")
+        self.assertEqual(Verdict.PASS, check.verdict)
 
     def test_model_mismatch_is_invalid(self) -> None:
         """静默回落到默认模型时，测的根本不是目标模型，这批数字没意义。"""
