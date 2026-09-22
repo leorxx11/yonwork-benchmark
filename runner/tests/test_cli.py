@@ -7,10 +7,17 @@ from unittest.mock import patch
 from runner.__main__ import main, EXIT_USAGE
 from runner.job_store import WorkerAlreadyRunning
 from runner.db import DatabaseError
+from runner.modelproxy import CollectorConfig
 from runner.tests.test_batch import _FakeDriver
 
 
 class CliLockTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 同 test_worker：不打桩的话，本机 `.env` 里开了采集就会去绑真实端口。
+        patcher = patch.object(CollectorConfig, "load", return_value=CollectorConfig())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_busy_or_unavailable_lock_prevents_any_turn(self):
         for error in (WorkerAlreadyRunning('busy'), DatabaseError('offline')):
             with self.subTest(error=type(error).__name__), TemporaryDirectory() as directory:

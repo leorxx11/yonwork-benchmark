@@ -19,6 +19,7 @@ from .discovery import DiscoveryError, discover
 from .drivers import DRIVERS, DriverError, DriverSpec, build_driver
 from .db import DatabaseError
 from .job_store import WorkerAlreadyRunning, exclusive_worker_lock
+from .modelproxy import CollectorConfig, CollectorConfigError, CollectorProxy, LedgerWriter
 from .models import EXIT_CODES, Verdict, expand_cases
 from .report import build_database, export_xlsx, summarize
 from .transport import TransportError
@@ -136,6 +137,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
+        # 配置有问题要在前置检查里暴露，而不是跑到一半才发现。
+        collector_config = CollectorConfig.load()
         driver = build_driver(
             DriverSpec(
                 product=args.product,
@@ -148,7 +151,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for line in driver.preflight():
             _log(line)
-    except DriverError as exc:
+        if collector_config.enabled:
+            _log(f"逐请求采集已启用：{collector_config.entry_url}")
+            _log("⚠️ 被测产品的 baseUrl 必须指向这个入口，否则每一轮都会标未采集")
+        else:
+            _log("逐请求采集未启用（BENCH_COLLECTOR_ENABLED=0）")
+    except (CollectorConfigError, DriverError) as exc:
         _log(f"前置检查失败：{exc}")
         return EXIT_USAGE
 
@@ -165,10 +173,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         collect_usage=not args.no_usage,
     )
 
+    collector: CollectorProxy | None = None
     try:
         # 和 Worker 共用锁；CLI 也会污染时间窗，不能绕开串行约束。
         with exclusive_worker_lock():
-            records = run_batch(items, driver=driver, options=options, report=_log)
+            if collector_config.enabled:
+                collector = CollectorProxy.from_config(
+                    collector_config,
+                    ledger=LedgerWriter(collector_config.ledger_path(batch_id)),
+                    proxy_id=batch_id,
+                )
+                collector.start()
+            records = run_batch(
+                items, driver=driver, options=options, report=_log, collector=collector
+            )
     except (WorkerAlreadyRunning, DatabaseError) as exc:
         _log(f"无法开始跑批：{exc}")
         return EXIT_USAGE
@@ -176,6 +194,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _log("已中断；已完成的轮次都在 " + str(results_path))
         records = []
     finally:
+        if collector is not None:
+            collector.stop()
         driver.close()
 
     if not results_path.is_file():

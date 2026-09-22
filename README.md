@@ -130,9 +130,10 @@ docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: u
 下一项：[YonWork / WorkBuddy 整轮模型调用监控待办](docs/model-call-monitoring-todo.md)，
 涵盖逐请求采集、任务关联、失败重试与完整性验收，当前尚未实现。
 主模型入口和任务关联已完成 [真实调用验证](docs/model-entry-validation.md)。
-[逐请求账本与采集代理](docs/model-request-ledger.md) 已实现并通过离线自检，
-但**还没接进跑批**，跑一轮 benchmark 目前不会产出账本。
-默认关闭，配置见 `.env.example` 的 `BENCH_COLLECTOR_*` 块。
+[逐请求账本与采集代理](docs/model-request-ledger.md) 已接进跑批，
+**默认关闭，且还没做过真实端到端验证**；入库与报告未做。
+配置见 `.env.example` 的 `BENCH_COLLECTOR_*` 块，开了之后
+被测产品的 baseUrl 要手动指向采集入口。
 离线自检（不需要任何产品）：`.venv/bin/python -m runner.modelproxy selfcheck`
 
 ## 目录
@@ -140,7 +141,7 @@ docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: u
 | 目录/文件 | 职责 |
 |---|---|
 | `runner/` | YonWork 驱动、YAML catalog、五层断言、任务 worker、结果入库 |
-| `runner/modelproxy/` | 逐请求模型调用账本与采集代理（已实现，未接入跑批） |
+| `runner/modelproxy/` | 逐请求模型调用账本与采集代理（默认关闭） |
 | `web/` | 测试控制台与报告（FastAPI + Jinja，本地 JS，无前端构建链） |
 | `cases/catalog.yaml` | Git 管理的主用例源 |
 | `infra/` | MySQL 8.4 表结构和持久化数据 |

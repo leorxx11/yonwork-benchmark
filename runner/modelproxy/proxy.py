@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from ..models import now_iso
@@ -122,7 +123,17 @@ class CollectorProxy:
     def start(self) -> None:
         if self._server is not None:
             raise ProxyError("采集代理已经在运行")
-        server = ThreadingHTTPServer((self._bind, self._port), _Handler)
+        try:
+            server = ThreadingHTTPServer((self._bind, self._port), _Handler)
+        except OSError as exc:
+            # 裸 OSError 只说 "Address already in use"，看不出是谁占着。
+            # 端口是固定的，所以占用者基本只有两种：没退干净的上一个 Worker，
+            # 或者还开着的 `python -m runner.modelproxy serve`。
+            raise ProxyError(
+                f"采集入口 {self._bind}:{self._port} 起不来（{exc.strerror or exc}）："
+                "端口可能被上一个 Worker 或 `runner.modelproxy serve` 占着；"
+                "关掉它，或改 BENCH_COLLECTOR_PORT"
+            ) from exc
         server.daemon_threads = True
         server.proxy = self  # type: ignore[attr-defined]
         self._server = server
@@ -164,6 +175,10 @@ class CollectorProxy:
     @property
     def proxy_id(self) -> str:
         return self._proxy_id
+
+    @property
+    def ledger_path(self) -> Path:
+        return self._ledger.path
 
     # ---- 轮次注册 -------------------------------------------------------
 
@@ -244,10 +259,7 @@ class CollectorProxy:
                 registration.requests.append(record.request_id)
             self._records[record.request_id] = record
 
-        authorized = secrets.compare_digest(
-            headers.get("Authorization", ""), f"Bearer {self._client_token}"
-        )
-        if not authorized:
+        if not self.authorized(headers.get("Authorization", "")):
             record.attribution = REJECTED
             record.termination = REFUSED
             record.http_status = 401
@@ -267,6 +279,9 @@ class CollectorProxy:
         record.usage_status = OBSERVED if record.usage else MISSING
         record.record_status = "closed"
         self._ledger.write(record)
+
+    def authorized(self, header_value: str) -> bool:
+        return secrets.compare_digest(header_value, f"Bearer {self._client_token}")
 
     def _correlate(self, headers) -> tuple[str | None, str]:
         """只认全等。命中不了就返回空，**不按时间窗猜**。"""
@@ -362,6 +377,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if "/v1/" not in self.path:
             self._json(404, {"error": "unknown collector route"})
+            return
+        if not proxy.authorized(self.headers.get("Authorization", "")):
+            # 凭据也要在这里查。产品的「测试连接」打的就是模型列表：
+            # 放过去的话，API Key 填错时测试仍然显示成功，
+            # 真发消息才每轮 401——又是一个「看起来正常」型故障。
+            self._json(401, {"error": "incorrect collector credential"})
             return
         request = urllib.request.Request(
             proxy.upstream_for(self.path),

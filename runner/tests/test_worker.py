@@ -13,6 +13,7 @@ from runner.job_store import (
     WorkerAlreadyRunning,
     exclusive_worker_lock,
 )
+from runner.modelproxy import CollectorConfig
 from runner.worker import execute_job
 
 
@@ -42,6 +43,14 @@ class _FakeDriver:
 
 
 class WorkerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 采集代理的配置来自仓库根的 `.env`。不打桩的话，本机一旦把
+        # BENCH_COLLECTOR_ENABLED 设成 1，这些测试就会去绑真实端口——
+        # 测试行为随本机配置变化，和 web/tests 当初那个 `_active_job` 一个毛病。
+        patcher = patch.object(CollectorConfig, "load", return_value=CollectorConfig())
+        self.collector_config = patcher.start()
+        self.addCleanup(patcher.stop)
+
     @staticmethod
     def _job() -> dict[str, object]:
         return {

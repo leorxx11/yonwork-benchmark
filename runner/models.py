@@ -213,6 +213,27 @@ class LogStats:
     source: str = "unavailable"
 
 
+# 逐请求采集的状态。**「没开采集」和「真的 0 次调用」必须分得开**——
+# 采集器没开着却报 0，和六-3 那个端上漏记长得一模一样：数字看着正常，全是假的。
+MODEL_CALLS_DISABLED = "disabled"        # 采集代理没启用（默认）
+MODEL_CALLS_OBSERVED = "observed"        # 这一轮确实有请求经过入口
+MODEL_CALLS_UNAVAILABLE = "unavailable"  # 采集开着，但这一轮一个请求都没经过
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCallCollection:
+    """一轮里经过采集入口的模型请求。**只搬运，不判定。**
+
+    `requests` 是 `modelproxy.ModelRequestRecord` 的 JSON 形状，逐请求一条；
+    完整账本另有一份 `model-requests.jsonl`，这里带路径便于回溯。
+    """
+
+    status: str = MODEL_CALLS_DISABLED
+    detail: str = ""
+    requests: tuple[JsonObject, ...] = ()
+    ledger_path: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Check:
     layer: Layer
@@ -246,6 +267,7 @@ class RunRecord:
     turn: ChatTurn | None = None
     usage_samples: tuple[UsageSample, ...] = ()
     log_stats: LogStats | None = None
+    model_calls: ModelCallCollection | None = None
     note: str = ""
     created_at: str = field(default_factory=now_iso)
 

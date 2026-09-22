@@ -5,9 +5,13 @@
 
 ## 状态
 
-`runner/modelproxy/` 已实现并通过 29 项离线单测（全套 226 项）。
-**尚未接入任何驱动、Worker、Web 或数据库**，所以现在还没有一轮真实 benchmark
-产出过账本。下面写的都是这一层自己的行为，不是整轮覆盖的结论。
+`runner/modelproxy/` 已实现，并已接进 `batch.run_batch` / CLI / Worker，
+36 项离线单测（全套 233 项）。**默认关闭**，关着时跑批行为和以前完全一样。
+
+**YonWork 真实端到端已跑通一轮**（2026-09-22，见下「实测」）。
+WorkBuddy 还没经过这个入口跑过批（它的入口能力在
+[入口验证](model-entry-validation.md) 里单独证过，但跑批接线没实测）。
+入库与 Web 报告未做。下面写的是这一层自己的行为，不是整轮覆盖的结论。
 
 | 文件 | 职责 |
 |---|---|
@@ -168,10 +172,85 @@ docker compose restart worker        # 或 Ctrl-C 后重跑 ./scripts/host_worke
 （YonWork 的 provider、WorkBuddy 的 `models.json`），否则产品会打到一个没人监听的
 端口，每一轮都失败——而且那个失败长得像产品的问题。
 
+## 接进跑批
+
+已接：`batch.run_batch` 收一个可选的 `collector`，CLI 和 Worker 按配置起停。
+
+```text
+Worker / CLI 起代理（一个批次一个，proxy_id = batch_id）
+  → 每轮发请求**之前** register(benchmark_id)
+  → driver.run_turn(...)
+  → finally close_run(benchmark_id)     ← 抛异常也要收，否则下一轮的请求会算进这一轮
+  → 把本轮请求收进 RunRecord.model_calls
+```
+
+注册必须在发请求**之前**：归属只认原生头全等，晚一步的话本轮最早那几个请求会记成
+未归属，事后补不回来。
+
+`RunRecord.model_calls.status` 三态，**「没开采集」和「0 次调用」必须分开**：
+
+| 状态 | 含义 |
+|---|---|
+| `disabled` | 采集代理没启用（默认）。报告显示「未采集」，不是 0 |
+| `observed` | 这一轮确实有请求经过入口 |
+| `unavailable` | 采集开着，但这一轮一个请求都没经过 |
+
+`unavailable` 那条是这次接线里最关键的一个判断。产品答上来了却一个请求都没经过入口，
+几乎一定是它的 baseUrl 没指向我们，而不是产品真的没调模型。这时记 0 就成了六-3
+那种静默漏记：数字看着正常，全是假的。所以标 `unavailable` 并在 note 里写清楚该查什么，
+由断言层决定怎么归类——这一层仍然只搬运不判定。
+
+⚠️ **产品的 baseUrl 要手动指过来**，驱动不会自动改产品配置。
+端口固定就是为了这一步只做一次；按
+`docs/model-entry-validation.md` 的结论，**不在测量轮次中反复新建账户**。
+
+## 实测：YonWork 一轮端到端（2026-09-22）
+
+批次 `collector-e2e`，`smoke` 的 Case02 跑 1 轮，模型选 YonWork 里新建的
+`统一代理`（baseUrl 指向采集入口）。判定 Pass，`model_calls.status = observed`。
+
+**完整关联链一次打通，全程没有用到时间窗：**
+
+```text
+BenchmarkId  bench-Case02-r1-1a0c7afba3a
+  → x-yonwork-run-id 严格等值          → 代理记 1 条 attributed 请求
+  → x-oneapi-request-id 2026…65WX6aoPI → NewAPI 后台 request_id 命中 1 条
+```
+
+逐请求观测：`deepseek-flash → deepseek-flash`、HTTP 200、`completed`、
+首个有效输出 1.159s、请求时长 1.837s、118 次有内容的流式分片、
+`upstream_attempts` 保持 None。账本两行（`open` / `closed`），重放合并成 1 条，
+文件里搜不到提示词和两种令牌。
+
+### 顺带撞出来的一个线索：两个来源的 input token 不是一回事
+
+同一轮，三个来源对不上，而且**差值不是随机的**：
+
+| 来源 | input tokens |
+|---|---:|
+| 代理（本轮实收） | 16,098 |
+| NewAPI 后台 | 16,098 |
+| 会话 JSONL | **7,010** |
+
+代理拿到的 usage 里写着 `prompt_cache_hit_tokens: 9088`、
+`prompt_cache_miss_tokens: 7010`，而 **7,010 恰好等于会话 JSONL 记的那个数**。
+也就是说：会话 JSONL 可能只记**缓存未命中**的那部分，NewAPI 记的是含命中的完整
+prompt_tokens。如果成立，CLAUDE.md 三里那个「同一轮换个来源差 7.6 倍」
+就有了具体机制，而不只是一句「口径不同」。
+
+⚠️ **n=1，这是线索不是结论。** 要确认得多跑几轮、覆盖缓存命中率不同的 Case，
+并且确认会话 JSONL 那个字段的语义。在确认之前，**按来源独立汇总的规矩不变**，
+不要因为这个假设去做任何换算。
+
+⚠️ 这一轮的耗时数字（代理 1.837s vs 整轮 wall 3.617s）**不是性能结论**：
+n=1、单 Case、单模型。两者之差也不能直接叫「产品开销」，那还包含我们这一跳。
+
 ## 明确还没做的
 
-- 接驱动 / Worker / Web / MySQL：一轮真实 benchmark 还不会产出账本（待办第 3、4 项）。
-  配置和健康检查已经就位，但**没有任何代码调用 `CollectorConfig` 去起代理**。
+- **WorkBuddy 没经过这个入口跑过批**：入口能力证过了，跑批接线没实测。
+- 入库与报告：`model_calls` 目前只在 `results.jsonl` 里，没进 MySQL、
+  Web 也看不到逐请求时间线（待办第 4 项）。
+- 工具续答、重试、子代理、取消这些场景还没跑过；本轮只是单次文本问答。
 - 诊断原文的显式开关、脱敏和保存期限：没实现，目前只能记元数据。
 - 连接复用、并发压测：本项保留串行锁，没有测过并发下的行为。
 - 真实的工具续答、重试、子代理、取消场景：待办第 1 项的路由与收尾验证仍未完成，

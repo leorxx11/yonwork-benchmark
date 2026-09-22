@@ -15,6 +15,9 @@ from pathlib import Path
 
 import runner.modelproxy.__main__ as cli
 import runner.modelproxy.config as config_module
+from runner.batch import BatchOptions, run_batch
+from runner.drivers import UsageCollection
+from runner.models import ChatTurn, TaskItem, Verdict, now_iso
 from runner.modelproxy import (
     ATTRIBUTED,
     CollectorConfig,
@@ -240,6 +243,23 @@ class CollectorProxyTests(unittest.TestCase):
         self.assertEqual(record.http_status, 401)
         self.assertEqual(self.upstream.seen, [])
 
+    def test_model_list_requires_the_credential(self) -> None:
+        """产品的「测试连接」打的就是模型列表。放过去的话 API Key 填错也显示成功。"""
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        url = self.proxy.base_url + "/models"
+        request = urllib.request.Request(url, headers={"Authorization": "Bearer wrong"})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            opener.open(request, timeout=5)
+        with caught.exception:
+            self.assertEqual(caught.exception.code, 401)
+        right = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {self.proxy.client_token}"}
+        )
+        with opener.open(right, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+        # 模型列表不是模型调用，不该进账本。
+        self.assertEqual(self.proxy.records(), ())
+
     def test_unknown_path_is_refused(self) -> None:
         proxy_url = self.proxy.base_url.removesuffix("/v1")
         status, _ = _post(proxy_url + "/nope", {"model": "stream"},
@@ -411,6 +431,132 @@ class CollectorConfigTests(unittest.TestCase):
                            "BENCH_COLLECTOR_CLIENT_TOKEN": "t",
                            "BENCH_COLLECTOR_PORT": "3398"})
         self.assertEqual(cli.health(), 1)
+
+
+class _ProxyDriver:
+    """假驱动：`run_turn` 时**真的**往采集入口发一个请求，模拟被测产品的调用。
+
+    `routed=False` 模拟「产品的 baseUrl 没指向我们」——这是接进跑批之后最容易
+    出现、也最容易被记成假数据的那种配置错误。
+    """
+
+    product = "yonwork"
+
+    def __init__(self, proxy: CollectorProxy, *, routed: bool = True, calls: int = 1) -> None:
+        self.proxy = proxy
+        self.routed = routed
+        self.calls = calls
+
+    def preflight(self):
+        return ()
+
+    def session_key(self, benchmark_id: str) -> str:
+        return f"agent:main:{benchmark_id}".lower()
+
+    def run_turn(self, *, benchmark_id: str, prompt: str):
+        if self.routed:
+            for _ in range(self.calls):
+                _post(self.proxy.base_url + "/chat/completions",
+                      {"model": "stream", "stream": True, "messages": []},
+                      token=self.proxy.client_token,
+                      extra={"x-yonwork-run-id": benchmark_id})
+        return ChatTurn(
+            benchmark_id=benchmark_id, session_key=self.session_key(benchmark_id),
+            prompt=prompt, started_at=now_iso(), ended_at=now_iso(), duration_seconds=1.0,
+            run_id=benchmark_id, answer="ok", terminated_by="chat.complete",
+            stop_reason="stop", http_status=200,
+        )
+
+    def collect_usage(self, turn):
+        return UsageCollection()
+
+    def enrich(self, turn):
+        return turn
+
+    def close(self) -> None:
+        return None
+
+
+class BatchWiringTests(unittest.TestCase):
+    """`batch.run_batch` 接上采集代理之后的行为。"""
+
+    def setUp(self) -> None:
+        self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), _StubUpstream)
+        self.upstream.seen = []  # type: ignore[attr-defined]
+        self.upstream.daemon_threads = True
+        threading.Thread(target=self.upstream.serve_forever, daemon=True).start()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.proxy = CollectorProxy(
+            upstream_url=f"http://127.0.0.1:{self.upstream.server_address[1]}",
+            upstream_key="upstream-secret",
+            ledger=LedgerWriter(self.root / "model-requests.jsonl"),
+            proxy_id="batch-test",
+        )
+        self.proxy.start()
+        self.addCleanup(self.temporary.cleanup)
+        self.addCleanup(self.upstream.server_close)
+        self.addCleanup(self.upstream.shutdown)
+        self.addCleanup(self.proxy.stop)
+
+    def _run(self, driver, *, count: int = 1, collector: CollectorProxy | None = None):
+        items = [TaskItem(position=index, case_name="smoke", run_no=index + 1, prompt="hi")
+                 for index in range(count)]
+        options = BatchOptions(batch_id="batch-test", results_path=self.root / "results.jsonl")
+        return run_batch(items, driver=driver, options=options, collector=collector)
+
+    def test_disabled_collector_is_not_reported_as_zero(self) -> None:
+        """没开采集就得说「没开」。报 0 次调用和六-3 那个端上漏记一模一样。"""
+        record, = self._run(_ProxyDriver(self.proxy, routed=False))
+        self.assertEqual(record.model_calls.status, "disabled")
+        self.assertEqual(record.model_calls.requests, ())
+        self.assertEqual(record.verdict, Verdict.PASS)
+
+    def test_routed_turn_records_its_requests(self) -> None:
+        record, = self._run(_ProxyDriver(self.proxy, calls=2), collector=self.proxy)
+        self.assertEqual(record.model_calls.status, "observed")
+        self.assertEqual(len(record.model_calls.requests), 2)
+        self.assertTrue(all(item["run_id"] == record.benchmark_id
+                            for item in record.model_calls.requests))
+        self.assertTrue(all(item["attribution"] == ATTRIBUTED
+                            for item in record.model_calls.requests))
+        self.assertIn("model-requests.jsonl", record.model_calls.ledger_path)
+
+    def test_enabled_but_unrouted_turn_is_flagged_not_zeroed(self) -> None:
+        """采集开着却一个请求都没经过 = baseUrl 没指过来，不是产品没调模型。"""
+        record, = self._run(_ProxyDriver(self.proxy, routed=False), collector=self.proxy)
+        self.assertEqual(record.model_calls.status, "unavailable")
+        self.assertIn("baseUrl", record.model_calls.detail)
+        self.assertIn("没有任何请求经过采集入口", record.note)
+
+    def test_each_turn_gets_its_own_requests(self) -> None:
+        records = self._run(_ProxyDriver(self.proxy), count=3, collector=self.proxy)
+        self.assertEqual([len(item.model_calls.requests) for item in records], [1, 1, 1])
+        owners = {item.model_calls.requests[0]["run_id"] for item in records}
+        self.assertEqual(owners, {item.benchmark_id for item in records})
+
+    def test_records_survive_a_failing_turn(self) -> None:
+        """轮次抛异常也要收尾，否则下一轮的请求会被算进这一轮。"""
+        driver = _ProxyDriver(self.proxy)
+        original = driver.run_turn
+
+        def explode(*, benchmark_id: str, prompt: str):
+            original(benchmark_id=benchmark_id, prompt=prompt)
+            raise RuntimeError("产品挂了")
+
+        driver.run_turn = explode
+        first, second = self._run(driver, count=2, collector=self.proxy)
+        self.assertEqual(first.verdict, Verdict.ERROR)
+        self.assertEqual(len(first.model_calls.requests), 1)
+        self.assertEqual(len(second.model_calls.requests), 1)
+        self.assertNotEqual(first.model_calls.requests[0]["run_id"],
+                            second.model_calls.requests[0]["run_id"])
+
+    def test_record_json_round_trips(self) -> None:
+        record, = self._run(_ProxyDriver(self.proxy), collector=self.proxy)
+        payload = json.loads(json.dumps(record.to_json(), ensure_ascii=False))
+        self.assertEqual(payload["model_calls"]["status"], "observed")
+        self.assertEqual(len(payload["model_calls"]["requests"]), 1)
 
 
 class LedgerReplayTests(unittest.TestCase):

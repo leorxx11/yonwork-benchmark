@@ -95,6 +95,13 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
    带大写字母则会触发第六节-5 的会话分裂，**界面上看不到完整对话**。
    `idempotencyKey` / `runId` 不要跟着小写——服务端原样保留，动了会打断用量匹配。
 
+⚠️ **会话 JSONL 的 input token 可能只是「缓存未命中」那部分。**（2026-09-22，线索，n=1）
+逐请求账本第一轮实测：同一轮代理和 NewAPI 都记 **16,098**，会话 JSONL 记 **7,010**，
+而代理拿到的 usage 里 `prompt_cache_miss_tokens` **正好是 7,010**
+（`prompt_cache_hit_tokens` 9,088）。若成立，下面那个「换个来源差 7.6 倍」
+就有了具体机制。**但 n=1，没确认字段语义之前不要据此换算**，
+按来源独立汇总的规矩不变。见 `docs/model-request-ledger.md`。
+
 **成本基线**：**没有单一底噪，别再找这个数。** 最小 prompt 曾实测 20832，
 但同一句「你好！」后来实测到 5,514 ～ 16,238，同一轮换个用量来源还能差 7.6 倍
 （长文本：session-jsonl 30,082 / NewAPI 228,354）。
@@ -116,7 +123,7 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 | 路径 | 说明 | 状态 |
 |---|---|---|
 | `runner/` | 驱动层（`drivers/`）+ 五层断言 + 入库，主链路 | 在用 |
-| `runner/modelproxy/` | 逐请求模型调用账本 + 采集代理 | **已实现未接入**，见七-下一项 |
+| `runner/modelproxy/` | 逐请求模型调用账本 + 采集代理 | 已接进跑批，**默认关闭、未实测**，见七-下一项 |
 | `web/` | 测试控制台 + 报告，FastAPI + Jinja + 本地原生 JS | 在用 |
 | `infra/` | 结果库 MySQL 8.4（:3307），JSONL 可随时重放 | 在用 |
 | `newapi/` | **被测对象**的模型网关（:3000），不是我们的基础设施 | 在用 |
@@ -765,7 +772,10 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
 `request_id`，不必逐轮改账户或依赖时间窗。辅助模型/子代理仍待动态验证。
 复现、临时账户同步问题和清理证据见 [入口验证](docs/model-entry-validation.md)。
 
-**账本与采集代理已实现（`runner/modelproxy/`，29 项离线单测），但还没有任何跑批调用它。**
+**账本与采集代理已实现并接进跑批**（`runner/modelproxy/` + `batch.run_batch`，
+36 项离线单测）。**默认关闭。YonWork 单次文本问答已真实跑通一轮**
+（2026-09-22，`BenchmarkId → x-yonwork-run-id → x-oneapi-request-id → NewAPI 后台`
+全程精确关联，没用时间窗）。WorkBuddy 跑批接线、入库和 Web 报告还没做。
 设计、归属策略和测量边界见 [逐请求账本](docs/model-request-ledger.md)。三件要内化的：
 
 - **关联只认原生头全等**，命中不了就记 `unattributed`，**绝不按时间窗猜**。
@@ -783,6 +793,11 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
 模型调用全部失败，等于我们把被测对象弄坏了，那些失败还会被记成产品的失败。
 所以入口端口必须**固定**（`BENCH_COLLECTOR_PORT`，默认 3312），产品配置里存的是 URL。
 默认关闭；回退时**光设回 0 不够**，产品的 baseUrl 也得改回直连 NewAPI。
+
+⚠️ **`RunRecord.model_calls` 三态，别把 `disabled` 和 0 次调用混了**：
+`disabled`（没开采集）/ `observed`（确实采到）/ `unavailable`（开着却一个请求都没经过）。
+最后一态几乎一定是产品的 baseUrl 没指过来，记 0 就成了六-3 那种静默漏记。
+**驱动不会自动改产品配置**，baseUrl 要手动指一次（端口固定就是为了只做一次）。
 
 ### 明确往后放的（写下来是为了不再反复捡起）
 

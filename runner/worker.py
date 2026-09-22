@@ -31,6 +31,13 @@ from .job_store import (
     set_completed_runs,
     set_total_runs,
 )
+from .modelproxy import (
+    CollectorConfig,
+    CollectorConfigError,
+    CollectorProxy,
+    LedgerWriter,
+    ProxyError,
+)
 from .models import expand_cases
 from .newapi import NewApiError
 from .reconcile import collect_session_usage, reconcile_suite
@@ -59,6 +66,26 @@ def _terminal_log(job_id: str, message: str, level: str = "info") -> None:
         append_event(job_id, message, level)
     except DatabaseError as exc:
         print(f"[{job_id[:8]}] 终态事件写入失败：{exc}", file=sys.stderr, flush=True)
+
+
+def _build_collector(batch_id: str, report: Callable[[str], None]) -> CollectorProxy | None:
+    """按配置起一轮批次的采集代理。**默认关闭**，关着时返回 None。
+
+    代理跟着这个进程起，不做单独的服务：独立服务一旦挂了，产品的模型调用会
+    全部失败，等于我们把被测对象弄坏了，而那些失败还会被记成产品的失败。
+    端口因此必须固定——产品配置里存的是 URL。
+    """
+    config = CollectorConfig.load()
+    if not config.enabled:
+        return None
+    # proxy_id 用 batch_id：request_id 因此在重放和重复导入之间都稳定。
+    collector = CollectorProxy.from_config(
+        config, ledger=LedgerWriter(config.ledger_path(batch_id)), proxy_id=batch_id
+    )
+    collector.start()
+    report(f"逐请求采集已启用：{config.entry_url}")
+    report("⚠️ 被测产品的 baseUrl 必须指向这个入口，否则本批每一轮都会标未采集")
+    return collector
 
 
 def execute_job(
@@ -111,16 +138,22 @@ def execute_job(
             completed += 1
             set_completed_runs(job_id, completed)
 
-        records = run_batch(
-            items,
-            driver=driver,
-            options=options,
-            report=lambda message: _log(
-                job_id, message, "warning" if message.lstrip().startswith("!") else "info"
-            ),
-            on_record=on_record,
-            should_stop=lambda: shutdown_requested() or is_cancel_requested(job_id),
-        )
+        collector = _build_collector(batch_id, lambda line: _log(job_id, line))
+        try:
+            records = run_batch(
+                items,
+                driver=driver,
+                options=options,
+                report=lambda message: _log(
+                    job_id, message, "warning" if message.lstrip().startswith("!") else "info"
+                ),
+                on_record=on_record,
+                should_stop=lambda: shutdown_requested() or is_cancel_requested(job_id),
+                collector=collector,
+            )
+        finally:
+            if collector is not None:
+                collector.stop()
         driver.close()
 
         if records:
@@ -187,6 +220,8 @@ def execute_job(
     except (
         CaseCatalogError,
         CatalogError,
+        CollectorConfigError,
+        ProxyError,
         DatabaseError,
         DiscoveryError,
         DriverError,
