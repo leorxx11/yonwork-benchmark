@@ -72,6 +72,18 @@ services:
       NEWAPI_USER_ID: ${NEWAPI_USER_ID:-1}
       NEWAPI_ACCESS_TOKEN: ${NEWAPI_ACCESS_TOKEN:-}
       NEWAPI_TOKEN_NAME: ${NEWAPI_TOKEN_NAME:-}
+      # 采集代理跟着 Worker 进程内起，不是单独的服务：独立服务一旦挂了，
+      # 产品的模型调用会全部失败，等于我们把被测对象弄坏了。
+      # 容器是 network_mode: host，绑 127.0.0.1 就是 WSL 的 loopback，
+      # 再由 mirrored 网络连到 Windows——和 YonWork 只绑 127.0.0.1 是同一个机制。
+      BENCH_COLLECTOR_ENABLED: ${BENCH_COLLECTOR_ENABLED:-0}
+      BENCH_COLLECTOR_BIND: ${BENCH_COLLECTOR_BIND:-127.0.0.1}
+      BENCH_COLLECTOR_PORT: ${BENCH_COLLECTOR_PORT:-3312}
+      BENCH_COLLECTOR_UPSTREAM: ${BENCH_COLLECTOR_UPSTREAM:-}
+      BENCH_COLLECTOR_UPSTREAM_KEY: ${BENCH_COLLECTOR_UPSTREAM_KEY:-}
+      BENCH_COLLECTOR_CLIENT_TOKEN: ${BENCH_COLLECTOR_CLIENT_TOKEN:-}
+      BENCH_COLLECTOR_LEDGER_DIR: ${BENCH_COLLECTOR_LEDGER_DIR:-results}
+      BENCH_COLLECTOR_TIMEOUT_SECONDS: ${BENCH_COLLECTOR_TIMEOUT_SECONDS:-300}
       NO_PROXY: "*"
       no_proxy: "*"
     volumes: &benchmark-volumes
@@ -106,3 +118,11 @@ services:
         condition: service_healthy
       new-api:
         condition: service_healthy
+    # 采集代理关着时恒为健康（关着是默认状态，不是故障）；
+    # 开着但入口连不上才会变 unhealthy——那正是「配了却没生效」的信号。
+    healthcheck:
+      test: ["CMD", "python", "-m", "runner.modelproxy", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
