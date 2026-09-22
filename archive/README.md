@@ -9,6 +9,8 @@
 | `yonwork_error.log` | PAD 时代真实的失败样本（找不到按钮、Excel 存不进去） | 同上。两条记录正好是「一次超时整批中止」那类问题的实物证据 |
 | `check_cdp.ps1` | CDP 端口怎么探 | CDP 已降级为备用，只在需要验证 UI 本身时才用 |
 | `wsl_probe_prompt.md` | 当初是怎么问出 `docs/yonwork-automation-report.md` 的 | 调查已完成，结论在报告里 |
+| `workbuddy-probe-prompt.md` | 当初是怎么问出 `docs/workbuddy-probe-report.md` 的 | 同上，和 `wsl_probe_prompt.md` 同一类 |
+| `implementation-summary.md` | 2026-09-21 那一轮基础设施改造的快照 | 内容已被后续实现覆盖；它自称「尚未提交和推送」，照着读会得到错误的仓库状态 |
 
 ⚠️ `wsl_probe_prompt.md` 里有一条**已被推翻**的前提：它说「WSL2 的 127.0.0.1 不是 Windows 的
 loopback」。这台机器是 mirrored 模式，**这条不成立**——见报告第 0 节。

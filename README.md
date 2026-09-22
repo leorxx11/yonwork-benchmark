@@ -3,9 +3,9 @@
 在浏览器里选择用例集和模型，一键提交测试；后台 worker 调用 Windows 上已经安装并启动的
 YonWork，逐轮保存结果、采集用量、执行五层断言，最后在同一个前端查看报告。
 
-背景、环境坑、架构决策和待办见 [CLAUDE.md](CLAUDE.md)。本轮基础设施与前端集成的完整改动
-记录见 [docs/implementation-summary.md](docs/implementation-summary.md)。
+背景、环境坑、架构决策和待办见 [CLAUDE.md](CLAUDE.md)。
 逐轮 ErrorCalls 采集的范围和验收结果见 [docs/error-calls-collection.md](docs/error-calls-collection.md)。
+第一份成规模的对比结果见 [四模式横向对比](docs/four-way-comparison-20260922.md)。
 **现在能说什么、不能说什么，见 [docs/conclusions-and-risks.md](docs/conclusions-and-risks.md)。**
 
 ## 换机后一键启动
@@ -127,12 +127,15 @@ docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: u
 或通过 Web 队列提交。干运行和查询模型不需要这把锁。手工操作产品和外部同令牌流量仍需自行隔离。
 完整边界和后续数据采集要求见 [测量正确性修复](docs/measurement-correctness.md)。
 
-下一项：[YonWork / WorkBuddy 整轮模型调用监控待办](docs/model-call-monitoring-todo.md)，
-涵盖逐请求采集、任务关联、失败重试与完整性验收，当前尚未实现。
-主模型入口和任务关联已完成 [真实调用验证](docs/model-entry-validation.md)。
-[逐请求账本与采集代理](docs/model-request-ledger.md) 已接进跑批、入库并上报告
-（`/run/<id>` 有逐请求时间线，`/suite/<id>` 有覆盖汇总），两个产品各实测通一轮。
-**默认关闭**；工具续答、子代理、取消等场景未验收。
+### 逐请求模型调用账本
+
+[账本与采集代理](docs/model-request-ledger.md) 已接进跑批、入库并上报告
+（`/run/<id>` 逐请求时间线，`/suite/<id>` 覆盖汇总）。**默认关闭。**
+
+⚠️ **整轮监控还不能验收**，见 [待办](docs/model-call-monitoring-todo.md)：
+YonWork 1.0.10 起不再发 `x-yonwork-run-id`，归属率归零（实测 13 请求 0 归属）；
+工具续答、子代理、取消三格也从没跑过。WorkBuddy 侧接近可验收
+（13 请求全归属、覆盖 12 轮、无串轮）。
 配置见 `.env.example` 的 `BENCH_COLLECTOR_*` 块，开了之后
 被测产品的 baseUrl 要手动指向采集入口。采集入口是常驻服务：
 `docker compose up -d collector`，起了之后跑批和手动聊天都能用。
@@ -151,7 +154,7 @@ docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: u
 | `newapi/` | 被测模型网关及其持久化数据 |
 | `compose.yml` | 一键环境：MySQL、NewAPI、Web、worker、collector |
 | `results/` | 每批 JSONL/SQLite/XLSX/SSE 产物，不进版本库 |
-| `docs/` | 调查报告、实现总结、结论与风险 |
+| `docs/` | 调查报告、结论与风险、对比结果 |
 | `archive/` | 已废弃的 PAD 流程、历史探测脚本、人工跑批 GUI，不维护 |
 
 ## 本地开发与测试
