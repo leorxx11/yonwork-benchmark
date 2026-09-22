@@ -6,7 +6,7 @@
 ## 状态
 
 `runner/modelproxy/` 已实现，并已接进 `batch.run_batch` / CLI / Worker，
-36 项离线单测（全套 233 项）。**默认关闭**，关着时跑批行为和以前完全一样。
+46 项离线单测（全套 243 项）。**默认关闭**，关着时跑批行为和以前完全一样。
 
 **两个产品的真实端到端各跑通一轮**（2026-09-22，见下「实测」），
 单次文本问答，全程精确关联、没用时间窗。入库与 Web 报告未做；
@@ -18,6 +18,7 @@
 | `ledger.py` | 记录结构、JSONL 落盘、重放合并、原材料汇总 |
 | `proxy.py` | `产品 → 采集代理 → NewAPI → 上游模型` 里的中间一跳 |
 | `config.py` | `.env` / 环境变量配置，默认关闭 |
+| `client.py` | 连常驻服务的 `RemoteCollector` + `build_collector` 选路 |
 | `__main__.py` | `selfcheck`（离线自检 + 额外开销）/ `serve` / `health` |
 
 ## 三层关联结构
@@ -113,11 +114,34 @@ run（一轮 benchmark，= BenchmarkId）
 
 ## Docker 一键环境接入
 
-**代理跟着 Worker 进程内起，不是单独的 compose 服务。**
-独立服务一旦挂了，产品的模型调用会全部失败——等于我们把被测对象弄坏了，
-而且那些失败还会被记成产品的失败。进程内起则代理的生命周期和驱动跑批的那个进程绑定，
-Worker 不在时本来也没有批次在跑。代价是入口端口必须**固定**（产品配置里存的是 URL），
-这和「保留串行锁、一次只允许一个 Worker」正好相容。
+**代理是常驻的 compose 服务 `collector`。**（2026-09-22 改过一次，见下）
+
+```bash
+docker compose up -d collector      # 起了就一直在，跑不跑批都在
+```
+
+⚠️ **这里我改过决定，理由值得记下来。** 最初做成「跟着 Worker 进程内起」，
+理由是「独立服务挂了会让产品的模型调用全部失败」。那个风险是真的，
+但实际用下来**反向的坑更大**：不跑批时入口是死的，在产品界面里手动选这个模型
+直接报「模型服务暂时不可用」——而且那个报错看起来像产品坏了，
+排查时会往完全错误的方向走（2026-09-22 就这么浪费了一轮）。
+
+改成常驻之后：
+
+- 跑批通过 `/_control` 注册/收尾轮次，账本按 `batch_id` 落到对应目录
+- 手动在产品里聊天的请求记 `unattributed`——**正常，不是故障**，它们本来就不属于任何一轮
+- 原来那个风险靠 `RemoteCollector.start()` 的健康检查兜：连不上就**报错不跑批**，
+  宁可不开始，也不要跑出一批「产品好像全挂了」的数据
+
+`BENCH_COLLECTOR_MODE`：`auto`（默认，服务在就用、不在就自己起）/ `service` / `embedded`。
+显式 `service` 却连不上时**不会静默回落**去抢端口——那会把「服务没起来」
+变成「端口冲突」，报错指向完全错误的地方。
+
+入口端口必须**固定**（产品配置里存的是 URL），这和「保留串行锁、
+一次只允许一个 Worker」正好相容。
+
+⚠️ collector 容器把 `./runner` 挂进去而不是烤进镜像：这一层还在迭代，
+挂载之后 `docker compose restart collector` 就生效，不用重建镜像。
 
 容器是 `network_mode: host`，绑 `127.0.0.1` 就是 WSL 的 loopback，
 再由 mirrored 网络连到 Windows——和 YonWork 只绑 `127.0.0.1` 是同一个机制，
@@ -133,6 +157,7 @@ Worker 不在时本来也没有批次在跑。代价是入口端口必须**固�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `BENCH_COLLECTOR_ENABLED` | `0` | **默认关闭**，关着时跑批行为和今天完全一样 |
+| `BENCH_COLLECTOR_MODE` | `auto` | `auto` / `service` / `embedded`，见上 |
 | `BENCH_COLLECTOR_PORT` | `3312` | 固定端口；和 3000/3211/3307/8000/9222 冲突会报错 |
 | `BENCH_COLLECTOR_BIND` | `127.0.0.1` | |
 | `BENCH_COLLECTOR_UPSTREAM` | 跟随 `NEWAPI_BASE_URL` | |
@@ -152,19 +177,18 @@ Worker 不在时本来也没有批次在跑。代价是入口端口必须**固�
 **关着时返回 0**——关着是默认状态，不是故障。开着但入口连不上才返回 1，
 那正是「配了却没生效」的信号。
 
-接进跑批之前想先验证产品能不能连上这个入口，用长驻模式手动发一条消息：
+没装 docker 时可以手动起同一个服务：
 
 ```bash
 .venv/bin/python -m runner.modelproxy serve      # Ctrl-C 停止
 ```
 
-此时没有轮次注册，经过的请求一律记 `unattributed`，但足以证明链路通。
-
 ### 回退
 
 ```bash
 # 1. .env 里设回 BENCH_COLLECTOR_ENABLED=0
-# 2. 重启 Worker
+# 2. 停掉常驻服务并重启 Worker
+docker compose stop collector
 docker compose restart worker        # 或 Ctrl-C 后重跑 ./scripts/host_worker.sh
 ```
 
@@ -174,10 +198,12 @@ docker compose restart worker        # 或 Ctrl-C 后重跑 ./scripts/host_worke
 
 ## 接进跑批
 
-已接：`batch.run_batch` 收一个可选的 `collector`，CLI 和 Worker 按配置起停。
+已接：`batch.run_batch` 收一个可选的 `collector`。CLI 和 Worker 用
+`build_collector()` 选路——常驻服务在就连它，不在就自己起一个。
+`batch.py` 对这两种一无所知，因为 `RemoteCollector` 和 `CollectorProxy` 形状一样。
 
 ```text
-Worker / CLI 起代理（一个批次一个，proxy_id = batch_id）
+build_collector()（常驻服务 或 本进程内，proxy_id = batch_id）
   → 每轮发请求**之前** register(benchmark_id)
   → driver.run_turn(...)
   → finally close_run(benchmark_id)     ← 抛异常也要收，否则下一轮的请求会算进这一轮

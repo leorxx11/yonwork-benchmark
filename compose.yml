@@ -38,6 +38,17 @@ services:
     environment:
       TZ: Asia/Shanghai
       SESSION_SECRET: ${SESSION_SECRET:?请先运行 ./scripts/bootstrap.sh}
+      # 2026-09-22 实测：NewAPI 的 HTTP 连接池会被污染——复用到已经死掉的连接后，
+      # 新请求排在上面直到读超时，表现为「NewAPI 突然变慢几分钟」，重启即恢复。
+      # 同一容器里用真 key 直连 DeepSeek 是 1～2s（3/3），走 NewAPI 转发却挂几分钟，
+      # 所以既不是网络也不是上游。IDLE_CONN_TIMEOUT 让空闲连接尽早丢弃，
+      # RELAY_TIMEOUT 把「挂几分钟」变成有界失败——**挂住比失败更糟**，
+      # 因为一轮 benchmark 会被记成产品 Timeout（见 docs/newapi-stall.md）。
+      IDLE_CONN_TIMEOUT: ${NEWAPI_IDLE_CONN_TIMEOUT:-30}
+      MAX_IDLE_CONNS: ${NEWAPI_MAX_IDLE_CONNS:-8}
+      CONNECT_TIMEOUT: ${NEWAPI_CONNECT_TIMEOUT:-10}
+      RELAY_TIMEOUT: ${NEWAPI_RELAY_TIMEOUT:-180}
+      STREAMING_TIMEOUT: ${NEWAPI_STREAMING_TIMEOUT:-180}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/status || exit 1"]
       interval: 10s
@@ -101,6 +112,37 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+
+  collector:
+    # 逐请求模型调用采集入口。**常驻**，不跟着跑批起停——
+    # 跟着起停的话，不跑批时产品里那个模型是死的，手动一用就报
+    # 「模型服务暂时不可用」，而且那个报错看起来像产品坏了（2026-09-22 踩过）。
+    # 跑批通过 /_control 注册轮次，见 runner/modelproxy/client.py。
+    image: yonwork-benchmark:local
+    command: ["python", "-m", "runner.modelproxy", "serve", "--batch-id", "collector-idle"]
+    restart: unless-stopped
+    init: true
+    # 绑 127.0.0.1 就是 WSL 的 loopback，再由 mirrored 网络连到 Windows，
+    # 所以 YonWork / WorkBuddy 填 http://127.0.0.1:3312/v1 就能连上。
+    network_mode: host
+    environment: *benchmark-environment
+    volumes:
+      - ./results:/app/results
+      - ./cases:/app/cases:ro
+      # 源码挂进来而不是烤进镜像：这一层还在迭代，挂载之后
+      # `docker compose restart collector` 就能生效，不用重建镜像。
+      # （也绕开了本机拉不到 Docker Hub / PyPI 时根本建不了镜像的问题。）
+      - ./runner:/app/runner:ro
+      - type: bind
+        source: ${YONWORK_DATA_DIR:?请先运行 ./scripts/bootstrap.sh}
+        target: /yonwork-data
+        read_only: true
+    healthcheck:
+      test: ["CMD", "python", "-m", "runner.modelproxy", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   worker:
     # 与 Web 共用同一镜像，避免首次启动时并行构建两份完全相同的层。

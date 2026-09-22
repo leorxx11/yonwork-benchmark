@@ -23,6 +23,9 @@ from runner.modelproxy import (
     CollectorConfig,
     CollectorConfigError,
     CollectorProxy,
+    ProxyError,
+    RemoteCollector,
+    build_collector,
     INCOMPLETE,
     LATE,
     LedgerWriter,
@@ -431,6 +434,113 @@ class CollectorConfigTests(unittest.TestCase):
                            "BENCH_COLLECTOR_CLIENT_TOKEN": "t",
                            "BENCH_COLLECTOR_PORT": "3398"})
         self.assertEqual(cli.health(), 1)
+
+
+class ControlApiTests(unittest.TestCase):
+    """常驻服务的控制接口：跑批靠它注册/收尾轮次、取回本轮请求。"""
+
+    def setUp(self) -> None:
+        self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), _StubUpstream)
+        self.upstream.seen = []  # type: ignore[attr-defined]
+        self.upstream.daemon_threads = True
+        threading.Thread(target=self.upstream.serve_forever, daemon=True).start()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.proxy = CollectorProxy(
+            upstream_url=f"http://127.0.0.1:{self.upstream.server_address[1]}",
+            upstream_key="upstream-secret",
+            ledger=LedgerWriter(self.root / "idle" / "model-requests.jsonl"),
+            proxy_id="control-test", ledger_dir=self.root,
+        )
+        self.proxy.start()
+        self.addCleanup(self.temporary.cleanup)
+        self.addCleanup(self.upstream.server_close)
+        self.addCleanup(self.upstream.shutdown)
+        self.addCleanup(self.proxy.stop)
+        self.base = self.proxy.base_url.removesuffix("/v1")
+
+    def _control(self, method, path, payload=None, token=None):
+        data = json.dumps(payload).encode() if payload is not None else None
+        request = urllib.request.Request(
+            self.base + "/_control" + path, data=data, method=method,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {token or self.proxy.client_token}"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=5) as response:
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read() or b"{}")
+
+    def test_register_switches_ledger_to_the_batch(self) -> None:
+        status, body = self._control("POST", "/runs",
+                                     {"run_id": "r1", "product": "yonwork", "batch_id": "b7"})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ledger_path"].endswith("b7/model-requests.jsonl"))
+        self.assertEqual(self.proxy.ledger_path, self.root / "b7" / "model-requests.jsonl")
+
+    def test_full_round_trip(self) -> None:
+        self._control("POST", "/runs", {"run_id": "r1", "product": "yonwork", "batch_id": "b7"})
+        _post(self.proxy.base_url + "/chat/completions",
+              {"model": "stream", "stream": True, "messages": []},
+              token=self.proxy.client_token, extra={"x-yonwork-run-id": "r1"})
+        self._control("POST", "/runs/r1/close")
+        status, body = self._control("GET", "/runs/r1")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["requests"]), 1)
+        self.assertEqual(body["requests"][0]["attribution"], ATTRIBUTED)
+
+    def test_control_requires_the_credential(self) -> None:
+        status, _ = self._control("POST", "/runs", {"run_id": "r1"}, token="wrong")
+        self.assertEqual(status, 401)
+        status, _ = self._control("GET", "/runs/r1", token="wrong")
+        self.assertEqual(status, 401)
+
+    def test_duplicate_registration_is_rejected(self) -> None:
+        """同一个 run 注册两次说明调用方有 bug，静默接受会让归属乱掉。"""
+        self._control("POST", "/runs", {"run_id": "r1", "product": "yonwork", "batch_id": "b7"})
+        status, _ = self._control("POST", "/runs",
+                                  {"run_id": "r1", "product": "yonwork", "batch_id": "b7"})
+        self.assertEqual(status, 409)
+
+    def test_control_traffic_never_enters_the_ledger(self) -> None:
+        self._control("POST", "/runs", {"run_id": "r1", "product": "yonwork", "batch_id": "b7"})
+        self._control("GET", "/runs/r1")
+        self._control("POST", "/runs/r1/close")
+        self.assertEqual(self.proxy.records(), ())
+
+
+class RemoteCollectorTests(unittest.TestCase):
+    """`build_collector` 的选路。连不上常驻服务时**不能静默回落**去抢端口。"""
+
+    def _config(self, port, mode="auto"):
+        return CollectorConfig(enabled=True, mode=mode, port=port,
+                               upstream_key="k", client_token="t")
+
+    def test_unreachable_service_is_reported_not_silently_replaced(self) -> None:
+        remote = RemoteCollector(self._config(3399, "service"), batch_id="b1")
+        with self.assertRaises(ProxyError) as caught:
+            remote.start()
+        self.assertIn("采集服务不可达", str(caught.exception))
+
+    def test_explicit_service_mode_does_not_fall_back_to_embedded(self) -> None:
+        with self.assertRaises(ProxyError):
+            build_collector(self._config(3399, "service"), batch_id="b1")
+
+    def test_disabled_config_yields_nothing(self) -> None:
+        self.assertIsNone(build_collector(CollectorConfig(enabled=False), batch_id="b1"))
+
+    def test_ledger_path_is_local_not_the_services_own(self) -> None:
+        """服务可能在容器里，它报的是容器内路径；入库要用本机路径才读得到。"""
+        remote = RemoteCollector(self._config(3399), batch_id="b1")
+        self.assertTrue(str(remote.ledger_path).endswith("b1/model-requests.jsonl"))
+        self.assertTrue(remote.ledger_path.is_absolute())
+
+    def test_close_run_failure_does_not_break_the_turn(self) -> None:
+        """轮次已经跑完了，收尾失败只影响之后迟到请求归哪一轮。"""
+        RemoteCollector(self._config(3399), batch_id="b1").close_run("r1")
+        self.assertEqual(RemoteCollector(self._config(3399), batch_id="b1").records_for("r1"), ())
 
 
 class _ProxyDriver:

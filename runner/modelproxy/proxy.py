@@ -99,6 +99,7 @@ class CollectorProxy:
         proxy_id: str | None = None,
         client_token: str | None = None,
         timeout_seconds: float = 300.0,
+        ledger_dir: Path | None = None,
     ) -> None:
         upstream = urlsplit(upstream_url)
         if not upstream.scheme or not upstream.netloc:
@@ -118,6 +119,8 @@ class CollectorProxy:
         self._thread: threading.Thread | None = None
         self._bind = bind
         self._port = port
+        # 常驻服务按 batch_id 切账本文件时用它拼路径。
+        self._ledger_dir = Path(ledger_dir) if ledger_dir else ledger.path.parent.parent
 
     # ---- 生命周期 -------------------------------------------------------
 
@@ -180,6 +183,20 @@ class CollectorProxy:
     @property
     def ledger_path(self) -> Path:
         return self._ledger.path
+
+    @property
+    def ledger_dir(self) -> Path:
+        return self._ledger_dir
+
+    def use_ledger(self, path: Path) -> None:
+        """切到某个批次自己的账本文件。
+
+        常驻服务模式下一个进程要服务多个批次，但批次之间是串行的
+        （MySQL 咨询锁保证），所以直接换 writer 就够，不需要并发安全的多写。
+        """
+        with self._lock:
+            if Path(path) != self._ledger.path:
+                self._ledger = LedgerWriter(Path(path))
 
     # ---- 轮次注册 -------------------------------------------------------
 
@@ -319,6 +336,7 @@ class CollectorProxy:
             proxy_id=proxy_id,
             client_token=config.client_token,
             timeout_seconds=config.timeout_seconds,
+            ledger_dir=config.resolved_ledger_dir,
         )
 
 
@@ -385,6 +403,18 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         """模型列表等非模型调用**不记账本**：记了会把「这一轮发了几次模型请求」冲淡。"""
         proxy = self._proxy
+        parts = self._control_path()
+        if parts is not None:
+            if not proxy.authorized(self.headers.get("Authorization", "")):
+                self._json(401, {"error": "incorrect collector credential"})
+                return
+            if len(parts) == 2 and parts[0] == "runs":
+                records = proxy.records_for(parts[1])
+                self._json(200, {"requests": [item.to_json() for item in records],
+                                 "ledger_path": str(proxy.ledger_path)})
+            else:
+                self._json(404, {"error": "unknown control route"})
+            return
         if self.path.rstrip("/") == "/healthz":
             # 免鉴权，但只回状态不回任何凭据或轮次内容。绑的是 loopback。
             self._json(200, {"ok": True, "proxy_id": proxy.proxy_id,
@@ -418,8 +448,55 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    # ---- 控制接口 ------------------------------------------------------
+    #
+    # 常驻服务模式下，跑批通过这几个接口注册/收尾轮次、取回本轮请求。
+    # 它们**不是**被测产品会碰的路径，所以前缀刻意和 `/v1/` 分开，
+    # 也不进账本——账本只记模型请求。
+
+    def _control(self, action: str, payload: dict) -> tuple[int, dict]:
+        proxy = self._proxy
+        if action == "register":
+            batch_id = str(payload.get("batch_id") or "").strip()
+            if batch_id:
+                proxy.use_ledger(proxy.ledger_dir / batch_id / "model-requests.jsonl")
+            try:
+                proxy.register(run_id=str(payload.get("run_id") or ""),
+                               product=str(payload.get("product") or ""))
+            except ProxyError as exc:
+                return 409, {"error": str(exc)}
+            return 200, {"ok": True, "ledger_path": str(proxy.ledger_path)}
+        if action == "close":
+            proxy.close_run(str(payload.get("run_id") or ""))
+            return 200, {"ok": True}
+        return 404, {"error": "unknown control action"}
+
+    def _control_path(self) -> list[str] | None:
+        if not self.path.startswith("/_control/"):
+            return None
+        return [part for part in self.path[len("/_control/"):].split("/") if part]
+
     def do_POST(self) -> None:
         proxy = self._proxy
+        parts = self._control_path()
+        if parts is not None:
+            if not proxy.authorized(self.headers.get("Authorization", "")):
+                self._json(401, {"error": "incorrect collector credential"})
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._json(400, {"error": "control payload is not JSON"})
+                return
+            if parts == ["runs"]:
+                status, body = self._control("register", payload)
+            elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "close":
+                status, body = self._control("close", {"run_id": parts[1]})
+            else:
+                status, body = 404, {"error": "unknown control route"}
+            self._json(status, body)
+            return
         chunked = "chunked" in (self.headers.get("Transfer-Encoding") or "").lower()
         length = int(self.headers.get("Content-Length") or 0)
         body = b"" if chunked else (self.rfile.read(length) if length > 0 else b"")

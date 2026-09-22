@@ -55,6 +55,11 @@ class CollectorConfig:
     """
 
     enabled: bool = False
+    # auto（默认）/ service / embedded。
+    # auto：入口已经有人在服务就用那个常驻服务，否则跑批自己起一个。
+    # 常驻服务的好处是**不跑批时入口也活着**——否则手动在产品里选这个模型
+    # 会直接报「模型服务暂时不可用」，2026-09-22 踩过。
+    mode: str = "auto"
     bind: str = "127.0.0.1"
     port: int = DEFAULT_PORT
     upstream_url: str = "http://127.0.0.1:3000"
@@ -83,8 +88,13 @@ class CollectorConfig:
             raise CollectorConfigError(
                 f"BENCH_COLLECTOR_TIMEOUT_SECONDS 不是数字：{raw_timeout}"
             ) from exc
+        mode = (_setting("BENCH_COLLECTOR_MODE") or "auto").lower()
+        if mode not in ("auto", "service", "embedded"):
+            raise CollectorConfigError(
+                f"BENCH_COLLECTOR_MODE 只认 auto/service/embedded，收到：{mode}")
         config = cls(
             enabled=enabled,
+            mode=mode,
             bind=_setting("BENCH_COLLECTOR_BIND") or "127.0.0.1",
             port=port,
             upstream_url=(
@@ -123,6 +133,15 @@ class CollectorConfig:
             )
 
     @property
+    def resolved_ledger_dir(self) -> Path:
+        root = self.ledger_dir
+        return root if root.is_absolute() else project_root() / root
+
+    @property
+    def control_url(self) -> str:
+        return f"http://{self.bind}:{self.port}/_control"
+
+    @property
     def entry_url(self) -> str:
         """配进产品的 baseUrl。产品自己会在后面接 `/chat/completions`。"""
         return f"http://{self.bind}:{self.port}/v1"
@@ -132,7 +151,4 @@ class CollectorConfig:
         return f"http://{self.bind}:{self.port}/healthz"
 
     def ledger_path(self, batch_id: str) -> Path:
-        root = self.ledger_dir
-        if not root.is_absolute():
-            root = project_root() / root
-        return root / batch_id / "model-requests.jsonl"
+        return self.resolved_ledger_dir / batch_id / "model-requests.jsonl"

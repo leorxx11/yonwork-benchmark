@@ -130,10 +130,13 @@ docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: u
 下一项：[YonWork / WorkBuddy 整轮模型调用监控待办](docs/model-call-monitoring-todo.md)，
 涵盖逐请求采集、任务关联、失败重试与完整性验收，当前尚未实现。
 主模型入口和任务关联已完成 [真实调用验证](docs/model-entry-validation.md)。
-[逐请求账本与采集代理](docs/model-request-ledger.md) 已接进跑批，
-**默认关闭，且还没做过真实端到端验证**；入库与报告未做。
+[逐请求账本与采集代理](docs/model-request-ledger.md) 已接进跑批、入库并上报告
+（`/run/<id>` 有逐请求时间线，`/suite/<id>` 有覆盖汇总），两个产品各实测通一轮。
+**默认关闭**；工具续答、子代理、取消等场景未验收。
 配置见 `.env.example` 的 `BENCH_COLLECTOR_*` 块，开了之后
-被测产品的 baseUrl 要手动指向采集入口。
+被测产品的 baseUrl 要手动指向采集入口。采集入口是常驻服务：
+`docker compose up -d collector`，起了之后跑批和手动聊天都能用。
+跑批变慢时先看 [NewAPI 挂死排查](docs/newapi-stall.md)。
 离线自检（不需要任何产品）：`.venv/bin/python -m runner.modelproxy selfcheck`
 
 ## 目录
@@ -146,7 +149,7 @@ docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: u
 | `cases/catalog.yaml` | Git 管理的主用例源 |
 | `infra/` | MySQL 8.4 表结构和持久化数据 |
 | `newapi/` | 被测模型网关及其持久化数据 |
-| `compose.yml` | 一键环境：MySQL、NewAPI、Web、worker |
+| `compose.yml` | 一键环境：MySQL、NewAPI、Web、worker、collector |
 | `results/` | 每批 JSONL/SQLite/XLSX/SSE 产物，不进版本库 |
 | `docs/` | 调查报告、实现总结、结论与风险 |
 | `archive/` | 已废弃的 PAD 流程、历史探测脚本、人工跑批 GUI，不维护 |

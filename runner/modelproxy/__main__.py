@@ -142,11 +142,16 @@ def selfcheck(rounds: int) -> int:
 
 
 def serve(batch_id: str) -> int:
-    """按 `.env` 起一个长驻入口，直到收到 Ctrl-C / SIGTERM。
+    """常驻采集入口，直到收到 Ctrl-C / SIGTERM。compose 的 `collector` 服务跑的就是它。
 
-    **跑批还没接进来**，所以这里不会有任何轮次被注册，经过的请求一律记
-    `unattributed`。它现在的用途是：把产品的 baseUrl 指过来，手动发一条消息，
-    验证「产品确实能连上这个入口」，不必先改主链路。
+    两类流量共用这一个入口：
+
+    - **跑批**：Worker / CLI 通过 `/_control` 注册和收尾轮次，请求按原生头归属，
+      账本按 `batch_id` 落到对应目录。
+    - **手动**：在产品界面里直接选这个模型聊天。这些请求没有注册过的轮次标识，
+      一律记 `unattributed`——**这是正常的，不是故障**，它们本来就不属于任何一轮。
+
+    常驻的理由：跟着跑批起停的话，不跑批时这个模型在产品里是死的。
     """
     config = CollectorConfig.load()
     if not config.enabled:
@@ -158,7 +163,7 @@ def serve(batch_id: str) -> int:
     print(f"采集入口：{config.entry_url}")
     print(f"健康检查：{config.health_url}")
     print(f"账本：{ledger_path}")
-    print("⚠️ 跑批尚未接入，经过的请求都会记成 unattributed")
+    print("手动在产品里聊天的请求会记 unattributed（正常，它们不属于任何一轮）")
     stop = threading.Event()
     for name in (signal.SIGINT, signal.SIGTERM):
         signal.signal(name, lambda *_args: stop.set())

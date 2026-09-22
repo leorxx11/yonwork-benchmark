@@ -11,6 +11,7 @@
 账本里没有 verdict，缺失一律标 missing 而不是 0。
 """
 
+from .client import RemoteCollector, build_collector
 from .config import CollectorConfig, CollectorConfigError
 from .ledger import (
     ATTRIBUTED,
@@ -32,6 +33,8 @@ __all__ = [
     "CollectorConfig",
     "CollectorConfigError",
     "CollectorProxy",
+    "RemoteCollector",
+    "build_collector",
     "INCOMPLETE",
     "LATE",
     "LedgerError",

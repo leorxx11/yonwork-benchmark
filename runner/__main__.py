@@ -19,7 +19,7 @@ from .discovery import DiscoveryError, discover
 from .drivers import DRIVERS, DriverError, DriverSpec, build_driver
 from .db import DatabaseError
 from .job_store import WorkerAlreadyRunning, exclusive_worker_lock
-from .modelproxy import CollectorConfig, CollectorConfigError, CollectorProxy, LedgerWriter
+from .modelproxy import CollectorConfig, CollectorConfigError, ProxyError, build_collector
 from .models import EXIT_CODES, Verdict, expand_cases
 from .report import build_database, export_xlsx, summarize
 from .transport import TransportError
@@ -173,21 +173,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         collect_usage=not args.no_usage,
     )
 
-    collector: CollectorProxy | None = None
+    collector = None
     try:
         # 和 Worker 共用锁；CLI 也会污染时间窗，不能绕开串行约束。
         with exclusive_worker_lock():
-            if collector_config.enabled:
-                collector = CollectorProxy.from_config(
-                    collector_config,
-                    ledger=LedgerWriter(collector_config.ledger_path(batch_id)),
-                    proxy_id=batch_id,
-                )
-                collector.start()
+            collector = build_collector(collector_config, batch_id=batch_id)
             records = run_batch(
                 items, driver=driver, options=options, report=_log, collector=collector
             )
-    except (WorkerAlreadyRunning, DatabaseError) as exc:
+    except (WorkerAlreadyRunning, DatabaseError, ProxyError) as exc:
         _log(f"无法开始跑批：{exc}")
         return EXIT_USAGE
     except KeyboardInterrupt:

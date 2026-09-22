@@ -127,6 +127,7 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 | `web/` | 测试控制台 + 报告，FastAPI + Jinja + 本地原生 JS | 在用 |
 | `infra/` | 结果库 MySQL 8.4（:3307），JSONL 可随时重放 | 在用 |
 | `newapi/` | **被测对象**的模型网关（:3000），不是我们的基础设施 | 在用 |
+| `docs/newapi-stall.md` | NewAPI 连接池挂死的排查记录与处理 | **跑批变慢先看这个** |
 | `cases/catalog.yaml` | Git 版本化的主用例源，含用例集与断言 | 在用 |
 | `cases/yonwork_benchmark.xlsx` | 旧 prompt 清单和历史结果 | 只作兼容，不再默认读取 |
 | `compose.yml` / `Dockerfile` | MySQL、NewAPI、Web、串行 worker 一键环境 | 在用 |
@@ -781,7 +782,7 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
 复现、临时账户同步问题和清理证据见 [入口验证](docs/model-entry-validation.md)。
 
 **账本与采集代理已实现并接进跑批**（`runner/modelproxy/` + `batch.run_batch`，
-36 项离线单测）。**默认关闭。两个产品的单次文本问答都已真实跑通一轮**
+46 项离线单测）。**默认关闭。两个产品的单次文本问答都已真实跑通一轮**
 （2026-09-22，`BenchmarkId → 产品原生 run 头 → x-oneapi-request-id → NewAPI 后台`
 全程精确关联，没用时间窗）。入库和 Web 报告还没做；工具续答/子代理/取消没跑。
 
@@ -802,9 +803,13 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
 
 ⚠️ `close_run()` 只改归属标记，**不表示「不会再有请求」**；迟到请求仍归旧轮。
 
-⚠️ **代理跟着 Worker 进程内起，不做单独的 compose 服务**：独立服务挂掉会让产品的
-模型调用全部失败，等于我们把被测对象弄坏了，那些失败还会被记成产品的失败。
-所以入口端口必须**固定**（`BENCH_COLLECTOR_PORT`，默认 3312），产品配置里存的是 URL。
+⚠️ **代理是常驻的 compose 服务 `collector`**（`docker compose up -d collector`）。
+这里改过一次决定：最初做成「跟着 Worker 进程内起」，理由是「独立服务挂了会连累被测产品」。
+那个风险是真的，但**反向的坑更大**——不跑批时入口是死的，在产品界面里手动选这个模型
+直接报「模型服务暂时不可用」，而那个报错看起来像产品坏了，排查会走岔（2026-09-22 栽过）。
+现在靠 `RemoteCollector.start()` 的健康检查兜原来那个风险：连不上就报错不跑批。
+`BENCH_COLLECTOR_MODE=auto/service/embedded`；显式 `service` 连不上时**不静默回落**去抢端口。
+端口必须**固定**（默认 3312），产品配置里存的是 URL。
 默认关闭；回退时**光设回 0 不够**，产品的 baseUrl 也得改回直连 NewAPI。
 
 已入库并上报告：`model_requests` 表 + `runs.model_calls_status`，

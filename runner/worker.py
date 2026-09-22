@@ -34,9 +34,8 @@ from .job_store import (
 from .modelproxy import (
     CollectorConfig,
     CollectorConfigError,
-    CollectorProxy,
-    LedgerWriter,
     ProxyError,
+    build_collector,
 )
 from .models import expand_cases
 from .newapi import NewApiError
@@ -68,22 +67,18 @@ def _terminal_log(job_id: str, message: str, level: str = "info") -> None:
         print(f"[{job_id[:8]}] 终态事件写入失败：{exc}", file=sys.stderr, flush=True)
 
 
-def _build_collector(batch_id: str, report: Callable[[str], None]) -> CollectorProxy | None:
-    """按配置起一轮批次的采集代理。**默认关闭**，关着时返回 None。
+def _build_collector(batch_id: str, report: Callable[[str], None]):
+    """按配置拿一个采集器。**默认关闭**，关着时返回 None。
 
-    代理跟着这个进程起，不做单独的服务：独立服务一旦挂了，产品的模型调用会
-    全部失败，等于我们把被测对象弄坏了，而那些失败还会被记成产品的失败。
-    端口因此必须固定——产品配置里存的是 URL。
+    优先用常驻服务（`docker compose up -d collector`）：入口不跟着跑批起停，
+    不跑批时在产品界面里手动选这个模型也能用。连不上常驻服务时自己起一个。
     """
     config = CollectorConfig.load()
-    if not config.enabled:
+    collector = build_collector(config, batch_id=batch_id)
+    if collector is None:
         return None
-    # proxy_id 用 batch_id：request_id 因此在重放和重复导入之间都稳定。
-    collector = CollectorProxy.from_config(
-        config, ledger=LedgerWriter(config.ledger_path(batch_id)), proxy_id=batch_id
-    )
-    collector.start()
-    report(f"逐请求采集已启用：{config.entry_url}")
+    kind = "常驻服务" if type(collector).__name__ == "RemoteCollector" else "本进程内"
+    report(f"逐请求采集已启用（{kind}）：{config.entry_url}")
     report("⚠️ 被测产品的 baseUrl 必须指向这个入口，否则本批每一轮都会标未采集")
     return collector
 
