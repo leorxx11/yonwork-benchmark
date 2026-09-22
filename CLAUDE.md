@@ -135,6 +135,7 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 | `scripts/extract_asar.py` | 无需 Node 的 asar 解包/grep 工具 | 查源码时还用得到 |
 | `docs/yonwork-automation-report.md` | 完整调查报告（已脱敏） | **权威参考** |
 | `docs/conclusions-and-risks.md` | 现在能说什么 / 不能说什么 / 风险清单 | **对外讲之前先看这个** |
+| `docs/four-way-comparison-20260922.md` | 四模式横向对比的完整数据与口径 | 首份成规模的对比结果 |
 | `archive/benchmark-companion/` | WorkBuddy 的人工跑批 GUI（热键计时 + SQLite + Excel 同步） | **已归档 2026-09-21**，见下 |
 | `yonwork_usage/` | 解析 llm-observer JSONL 取 token | 主用途已被 `sessionlog.py` 取代，见下 |
 | `archive/` | PAD 流程导出、CDP 探测脚本、旧错误日志、当初的调查 prompt | 历史记录，不维护 |

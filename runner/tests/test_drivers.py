@@ -5,6 +5,9 @@ import os
 import subprocess
 import tempfile
 import unittest
+
+from runner.drivers.workbuddy import _build_turn
+from runner.models import now_iso
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -486,3 +489,51 @@ class WorkBuddySettingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkBuddyRequestedEntryTests(unittest.TestCase):
+    """校验「我们要的通路」和「产品实际请求的通路」是不是同一条。
+
+    WorkBuddy 没有 provider 账户，但 `providerData.requestModelName` 回答同一个问题。
+    ⚠️ 这两个值**必须来自不同来源**——同名变量互相覆盖会让断言自己比自己、恒过。
+    """
+
+    @staticmethod
+    def _records(reported: str, actual: str):
+        return [
+            {"type": "message", "role": "assistant", "content": [{"type": "text", "text": "ok"}],
+             "providerData": {"model": actual, "requestModelName": reported,
+                              "rawUsage": {"prompt_tokens": 10, "completion_tokens": 2}}},
+            {"type": "result", "subtype": "success", "is_error": False,
+             "session_id": "b1", "result": "ok", "duration_ms": 100,
+             "usage": {"input_tokens": 10, "output_tokens": 2}},
+        ]
+
+    def _build(self, *, asked: str, reported: str, actual: str):
+        return _build_turn(
+            benchmark_id="b1", session_key="b1", prompt="p", started_at=now_iso(),
+            duration=1.0, records=self._records(reported, actual),
+            requested_model=None, requested_entry=asked,
+            tools_enabled=False, transcript_path=None,
+        )
+
+    def test_asked_and_reported_are_kept_apart(self):
+        turn, sample = self._build(asked="deepseek-flash", reported="default", actual="minimax-m3")
+        self.assertEqual("deepseek-flash", turn.requested_provider)   # 我们要的
+        self.assertEqual("default", sample.provider)                  # 产品自报的
+        self.assertEqual("minimax-m3", sample.model)                  # 实际跑的
+
+    def test_default_mode_round_trips(self):
+        turn, sample = self._build(asked="default", reported="default", actual="glm-5.3")
+        self.assertEqual(turn.requested_provider, sample.provider)
+
+    def test_missing_report_leaves_provider_empty_not_guessed(self):
+        records = self._records("x", "m")
+        records[0]["providerData"].pop("requestModelName")
+        turn, sample = _build_turn(
+            benchmark_id="b1", session_key="b1", prompt="p", started_at=now_iso(),
+            duration=1.0, records=records, requested_model=None,
+            requested_entry="deepseek-flash", tools_enabled=False, transcript_path=None,
+        )
+        self.assertIsNone(sample.provider)   # 采不到就是采不到，不拿我们要求的值冒充
+        self.assertEqual("deepseek-flash", turn.requested_provider)

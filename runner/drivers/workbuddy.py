@@ -236,6 +236,10 @@ class WorkBuddyDriver:
             duration=duration,
             records=records,
             requested_model=self._requested_model(),
+            # **我们要求的配置条目**，和 requested_model 不是一回事：
+            # 后者在默认模式下留空（别名解析是正常的，不能判 Invalid），
+            # 而这一项永远有值，用来校验「跑的是不是我们要的那条通路」。
+            requested_entry=self.model_query.lower() or "default",
             tools_enabled=self.allow_tools,
             transcript_path=transcript_path,
         )
@@ -374,6 +378,7 @@ def _build_turn(
     duration: float,
     records: list[JsonObject],
     requested_model: str | None,
+    requested_entry: str,
     tools_enabled: bool,
     transcript_path: str | None,
 ) -> tuple[ChatTurn, UsageSample | None]:
@@ -386,6 +391,10 @@ def _build_turn(
     counts: Counter[str] = Counter()
     tool_calls: list[str] = []
     actual_model: str | None = None
+    # ⚠️ 必须和参数 `requested_entry`（**我们要求的**）分开命名。
+    # 同名的话产品自报值会覆盖我们的要求，provider-match 变成自己比自己、恒过——
+    # 一条恒过的断言比没有断言更糟。
+    reported_entry: str | None = None
     provider_usage: JsonObject = {}
     result: JsonObject | None = None
 
@@ -412,6 +421,13 @@ def _build_turn(
             # 不能信命令行参数——别名会被解析成具体模型。
             if isinstance(provider.get("model"), str):
                 actual_model = provider["model"]
+            # 产品自报的「这次请求的是哪个模型条目」。
+            # ⚠️ 这和 `model` 是两件事：`model` 是最终跑的，这个是请求的。
+            # 默认模式下 requestModelName='default' 而 model 可能是 glm-5.3 或
+            # minimax-m3——**WorkBuddy 的「默认」是个路由，不是固定模型**。
+            # 没有它就没法校验「我们要的通路和实际跑的是不是同一条」。
+            if isinstance(provider.get("requestModelName"), str):
+                reported_entry = provider["requestModelName"]
             raw = provider.get("rawUsage")
             if isinstance(raw, dict):
                 provider_usage = raw
@@ -452,10 +468,11 @@ def _build_turn(
         tool_calls_source="workbuddy-cli",
         requested_model=requested_model,
         requested_model_label=requested_model,
+        requested_provider=requested_entry,
         tools_enabled=tools_enabled,
         transcript_path=transcript_path,
     )
-    return turn, _usage_sample(result, provider_usage, actual_model)
+    return turn, _usage_sample(result, provider_usage, actual_model, reported_entry)
 
 
 def _tool_names(record: JsonObject) -> list[str]:
@@ -474,7 +491,8 @@ def _tool_names(record: JsonObject) -> list[str]:
 
 
 def _usage_sample(
-    result: JsonObject, provider_usage: JsonObject, actual_model: str | None
+    result: JsonObject, provider_usage: JsonObject, actual_model: str | None,
+    reported_entry: str | None = None,
 ) -> UsageSample | None:
     usage = result.get("usage")
     usage = usage if isinstance(usage, dict) else {}
@@ -495,6 +513,10 @@ def _usage_sample(
         # `total_cost_usd` 在这个构建里恒为 0，不是真实费用，所以不记。
         # `rawUsage.credit` 是产品积分，也不是美元，别改名混进成本列。
         cost_usd=None,
+        # WorkBuddy 没有「provider 账户」这个概念，但 requestModelName 回答的是
+        # 同一个问题：**这次请求走的是哪个配置条目**。放在 provider 列，
+        # 让 provider-match 能像校验 YonWork 的 provider 一样校验它。
+        provider=reported_entry,
         model=actual_model,
         session_id=result.get("session_id") if isinstance(result.get("session_id"), str) else None,
         match="session-id",

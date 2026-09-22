@@ -140,9 +140,13 @@ def _provider_match(turn: ChatTurn | None, usage: UsageSample) -> list[Check]:
     actual = usage.provider
     if not actual:
         return [Check.skipped(Layer.COST, "provider-match", "用量里没有 provider")]
-    if actual == requested:
+    # 大小写不敏感：WorkBuddy 自报 `Deepseek-V4.1-Flash`，而 CLI 参数要小写的
+    # `deepseek-v4.1-flash`——两者是同一个模型，按大小写判 Invalid 是误判，
+    # 会把「跑对了」记成「数据无意义」（实测踩过）。
+    folded_actual, folded_requested = actual.casefold(), requested.casefold()
+    if folded_actual == folded_requested:
         return [Check(Layer.COST, "provider-match", Verdict.PASS, requested)]
-    if len(actual) >= _MIN_PROVIDER_PREFIX and requested.startswith(actual):
+    if len(actual) >= _MIN_PROVIDER_PREFIX and folded_requested.startswith(folded_actual):
         return [
             Check(Layer.COST, "provider-match", Verdict.PASS,
                   f"{actual}…（产品记的是截短 id，与 {requested} 前缀一致）")

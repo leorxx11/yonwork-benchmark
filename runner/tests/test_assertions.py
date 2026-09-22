@@ -344,3 +344,8 @@ class ProviderMatchTests(unittest.TestCase):
         result = evaluate(turn=self._turn(None), expectations=Expectations(),
                           usage=usage, log_stats=None, failure=None)
         self.assertIsNone(next((c for c in result.checks if c.name == "provider-match"), None))
+
+    def test_case_difference_is_not_a_mismatch(self):
+        """WorkBuddy 自报 `Deepseek-V4.1-Flash`，CLI 参数是小写——同一个模型。"""
+        check = self._check("deepseek-v4.1-flash", "Deepseek-V4.1-Flash")
+        self.assertEqual(Verdict.PASS, check.verdict)
