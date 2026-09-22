@@ -127,6 +127,9 @@ docker compose up -d web        # ⚠️ 别用裸 up -d，worker 是 restart: u
 或通过 Web 队列提交。干运行和查询模型不需要这把锁。手工操作产品和外部同令牌流量仍需自行隔离。
 完整边界和后续数据采集要求见 [测量正确性修复](docs/measurement-correctness.md)。
 
+下一项：[YonWork / WorkBuddy 整轮模型调用监控待办](docs/model-call-monitoring-todo.md)，
+涵盖逐请求采集、任务关联、失败重试与完整性验收，当前尚未实现。
+
 ## 目录
 
 | 目录/文件 | 职责 |
