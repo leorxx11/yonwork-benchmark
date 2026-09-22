@@ -74,6 +74,93 @@
 <div class="panel">三个来源一条都没采到。端上端点漏记时就是这样，判定不受影响，但成本层全部跳过。</div>
 {% endif %}
 
+<h2>逐请求模型调用</h2>
+{% if run.model_calls_status == 'disabled' %}
+<div class="panel">
+  这一批没有开逐请求采集（<code>BENCH_COLLECTOR_ENABLED=0</code>）。
+  <strong>这不等于这一轮没有调用模型</strong>——只是这条通路没在看。
+</div>
+{% elif run.model_calls_status == 'unavailable' %}
+<div class="panel">
+  <span class="tag"><span class="dot v-Invalid"></span>开着采集，但这一轮一个请求都没经过入口</span>
+  <p>几乎一定是被测产品的 baseUrl 没指向采集入口，而不是产品真的没调模型。
+  <strong>所以这里显示「未采集」而不是 0。</strong></p>
+</div>
+{% elif model_calls.requests %}
+<table>
+  <tr>
+    <th>#</th><th>归属</th><th>模型</th><th class="num">首个输出</th>
+    <th class="num">请求耗时</th><th>HTTP</th><th>终止</th>
+    <th class="num">input</th><th class="num">output</th><th>NewAPI requestId</th>
+  </tr>
+  {% for item in model_calls.requests %}
+  <tr>
+    <td>{{ item.sequence }}</td>
+    <td>
+      {% if item.attribution == 'late' %}
+        <span class="tag"><span class="dot v-Timeout"></span>迟到（仍归本轮）</span>
+      {% else %}{{ item.attribution_source or item.attribution }}{% endif %}
+    </td>
+    <td>{{ item.requested_model or '—' }}
+      {%- if item.response_model and item.response_model != item.requested_model %}
+        → {{ item.response_model }}{% endif %}</td>
+    <td class="num">{{ item.first_output_ms | ms }}</td>
+    <td class="num">{{ item.duration_ms | ms }}</td>
+    <td>{{ item.http_status or '—' }}</td>
+    <td>
+      {% if item.termination and item.termination != 'completed' %}
+        <span class="tag"><span class="dot v-Fail"></span>{{ item.termination }}</span>
+        {{ item.error_kind }}
+      {% else %}{{ item.termination or '—' }}{% endif %}
+    </td>
+    <td class="num">{% if item.usage_status == 'observed' %}{{ item.input_tokens | num }}{% else %}未采集{% endif %}</td>
+    <td class="num">{% if item.usage_status == 'observed' %}{{ item.output_tokens | num }}{% else %}未采集{% endif %}</td>
+    <td>{{ item.upstream_request_id or '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div class="panel">
+  <p>整轮经过时间 <strong>{{ run.duration_ms | ms }}</strong>，
+     {{ model_calls.timing.measured }} 个请求的耗时之和
+     <strong>{{ model_calls.timing.sum_ms | ms }}</strong>。</p>
+  <p><strong>这两个数不能相减当成任何一方的开销。</strong>
+     请求之间还有产品自己的处理时间，差值不是单一成因。
+     {% if model_calls.timing.overlapping %}
+       而且这些请求在时间上<strong>有重叠</strong>，耗时之和把同一段墙钟算了多遍，
+       更不能当作整轮里的模型时间。
+     {% endif %}
+     {% if model_calls.timing.partial %}
+       另有请求没测到时长，所以这个「之和」本身是不完整的。
+     {% endif %}</p>
+  <p>上游尝试数：<strong>未知</strong>——网关内部重试观测不到，
+     一次客户端请求不等于一次上游尝试。</p>
+</div>
+{% else %}
+<div class="panel">采集开着且已归属，但库里没有请求记录；账本可能还没入库。</div>
+{% endif %}
+
+{% if model_calls.orphans %}
+<h3>同批次的未归属请求</h3>
+<div class="panel">
+  这些请求经过了采集入口，但没带上任何产品原生的轮次标识，
+  <strong>所以不知道属于哪一轮</strong>。按时间窗猜归属正是这套账本要消灭的东西，
+  因此单列在这里，不计进上面任何一轮。
+</div>
+<table>
+  <tr><th>#</th><th>模型</th><th>HTTP</th><th>终止</th><th class="num">请求耗时</th></tr>
+  {% for item in model_calls.orphans %}
+  <tr>
+    <td>{{ item.sequence }}</td>
+    <td>{{ item.requested_model or '—' }}</td>
+    <td>{{ item.http_status or '—' }}</td>
+    <td>{{ item.termination or '—' }}</td>
+    <td class="num">{{ item.duration_ms | ms }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
 <h2>Prompt</h2>
 <div class="panel"><pre class="prompt">{{ run.prompt }}</pre></div>
 

@@ -89,4 +89,50 @@
   {% endfor %}
 </table>
 
+<h2>逐请求模型调用覆盖</h2>
+<p class="hint">
+  每次经过采集入口的模型请求单独记一条。<strong>「未开采集」「开着没采到」「真的 0 次」是三件事</strong>：
+  前两者显示为未采集，不显示 0。token 只累计已观测到 usage 的请求，是<strong>已观测小计</strong>，
+  不是整轮 token，也不能和上面各来源的数字相加。
+</p>
+<table>
+  <tr>
+    <th>产品 / 请求模式</th><th class="num">采到 / 未采到 / 未开</th>
+    <th class="num">请求数</th><th>归属</th><th class="num">非正常终止</th>
+    <th class="num">input / output（已观测）</th><th class="num">上游尝试</th>
+  </tr>
+  {% for row in modes %}
+  {% set mc = row.model_calls %}
+  <tr>
+    <td>{{ row.product }} / {{ row.model_mode }}</td>
+    <td class="num">{{ mc.runs_observed }} / {{ mc.runs_unavailable }} / {{ mc.runs_disabled }}
+      {% if mc.runs_unavailable %}
+      <div class="label" style="color:var(--text-muted)">未采到的那些：查产品 baseUrl</div>
+      {% endif %}
+    </td>
+    <td class="num">{{ mc.requests }}</td>
+    <td>
+      {% if mc.requests %}
+        归属 {{ mc.attributed }}{% if mc.late %} · 迟到 {{ mc.late }}{% endif %}
+        {%- if mc.unattributed %} · <strong>未归属 {{ mc.unattributed }}</strong>{% endif %}
+        {%- if mc.rejected %} · 已拒 {{ mc.rejected }}{% endif %}
+      {% else %}—{% endif %}
+    </td>
+    <td class="num">{{ mc.failed if mc.requests else '—' }}</td>
+    <td class="num">
+      {% if mc.input_tokens_observed is not none %}
+        {{ mc.input_tokens_observed | num }} / {{ mc.output_tokens_observed | num }}
+        <div class="label">覆盖 {{ mc.usage_observed }}，缺 {{ mc.usage_missing }}</div>
+      {% else %}未采集{% endif %}
+    </td>
+    <td class="num">未知</td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="hint">
+  「上游尝试」恒为未知：网关内部重试观测不到，一次客户端请求不等于一次上游尝试。
+  非正常终止包含上游报错、断流、超时和客户端取消，<strong>不等于产品的失败率</strong>——
+  判定仍然看断言层。
+</p>
+
 {% endblock %}

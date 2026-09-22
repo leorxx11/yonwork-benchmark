@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS runs (
     -- 只有 WorkBuddy 这类「每轮一个进程」的产品有值，YonWork 常驻服务留 NULL。
     -- ⚠️ 与 runner/ingest.py 的按需 ALTER 是两份，加列时两处都要改。
     engine_ms         INT NULL,
+    -- 逐请求采集这一轮的状态：disabled（没开）/ observed（采到了）/
+    -- unavailable（开着却一个请求都没经过入口）。
+    -- **「没开」和「0 次调用」必须分开**，报 0 就是六-3 那种静默漏记。
+    -- ⚠️ 与 runner/ingest.py 的按需 ALTER 是两份，加列时两处都要改。
+    model_calls_status VARCHAR(16) NOT NULL DEFAULT 'disabled',
     terminated_by     VARCHAR(64)  NULL,
     stop_reason       VARCHAR(64)  NULL,
     tool_call_count   INT NULL,
@@ -113,6 +118,58 @@ CREATE TABLE IF NOT EXISTS usage_samples (
     KEY idx_usage_model (model),
     CONSTRAINT fk_usage_run FOREIGN KEY (benchmark_id)
         REFERENCES runs (benchmark_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 逐请求模型调用账本（runner/modelproxy）。一次**客户端到代理**的请求一行。
+-- 事实来源是 results/<batch>/model-requests.jsonl，这张表随时可重建。
+--
+-- benchmark_id 允许 NULL：归属不上的请求（没带产品原生关联头）依然要留下来，
+-- 它属于这个批次但不属于任何一轮。**绝不按时间窗硬塞给某一轮。**
+-- 所以外键挂在 batch_id 上，不是 benchmark_id。
+CREATE TABLE IF NOT EXISTS model_requests (
+    -- 代理分配的稳定 ID。重放/重复导入靠它幂等，别换成自增主键。
+    request_id         VARCHAR(160) NOT NULL PRIMARY KEY,
+    batch_id           VARCHAR(64)  NOT NULL,
+    benchmark_id       VARCHAR(128) NULL,
+    proxy_id           VARCHAR(128) NOT NULL DEFAULT '',
+    sequence           INT NOT NULL DEFAULT 0,
+    -- attributed / late / unattributed / rejected。late 仍归旧轮，不并入下一轮。
+    attribution        VARCHAR(16)  NOT NULL DEFAULT 'unattributed',
+    attribution_source VARCHAR(64)  NOT NULL DEFAULT '',
+    product            VARCHAR(32)  NULL,
+    protocol           VARCHAR(32)  NOT NULL DEFAULT '',
+    requested_model    VARCHAR(128) NULL,
+    -- 响应自称的模型，**不等于已证明的真实部署模型**。
+    response_model     VARCHAR(128) NULL,
+    is_stream          TINYINT(1)   NULL,
+    http_status        INT NULL,
+    -- completed / stream-truncated / upstream-error / client-disconnected /
+    -- transport-error / timeout / refused / incomplete
+    termination        VARCHAR(32)  NULL,
+    -- 首个**有效**输出：带内容或工具参数的那一片，响应头和空事件不算。
+    first_output_ms    INT NULL,
+    duration_ms        INT NULL,
+    input_tokens       INT NULL,
+    output_tokens      INT NULL,
+    total_tokens       INT NULL,
+    cache_read_tokens  INT NULL,
+    -- observed / missing。**缺就是缺，不补零。**
+    usage_status       VARCHAR(16)  NOT NULL DEFAULT 'missing',
+    output_events      INT NULL,
+    upstream_request_id VARCHAR(128) NULL,
+    -- **恒为 NULL**：一次客户端请求不等于一次上游尝试，网关内部重试看不见。
+    -- 填 1 就是拿观测不到的东西冒充证据。
+    upstream_attempts  INT NULL,
+    error_kind         VARCHAR(64)  NOT NULL DEFAULT '',
+    received_at        DATETIME(3)  NULL,
+    ended_at           DATETIME(3)  NULL,
+    raw                JSON NULL,
+    KEY idx_mreq_run (benchmark_id, sequence),
+    KEY idx_mreq_batch (batch_id, sequence),
+    KEY idx_mreq_attribution (attribution),
+    KEY idx_mreq_upstream (upstream_request_id),
+    CONSTRAINT fk_mreq_batch FOREIGN KEY (batch_id)
+        REFERENCES batches (batch_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Web 控制台提交的执行任务。任务状态属于控制面，不是模型判定结果。

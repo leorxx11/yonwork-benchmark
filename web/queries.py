@@ -55,7 +55,8 @@ def mode_summary(suite_id: str) -> list[dict[str, Any]]:
     runs = _rows(
         """
         SELECT b.product, b.model_mode, b.model_ref, b.batch_id, b.started_at,
-               r.benchmark_id, r.case_name, r.verdict, r.duration_ms, r.engine_ms
+               r.benchmark_id, r.case_name, r.verdict, r.duration_ms, r.engine_ms,
+               r.model_calls_status
         FROM batches b LEFT JOIN runs r ON r.batch_id = b.batch_id
         WHERE b.suite_id = %s
         ORDER BY b.product, b.model_mode, b.batch_id, r.position
@@ -66,6 +67,15 @@ def mode_summary(suite_id: str) -> list[dict[str, Any]]:
         SELECT u.benchmark_id, u.source, u.total_tokens, u.cost_usd, u.model
         FROM usage_samples u JOIN runs r ON r.benchmark_id = u.benchmark_id
         JOIN batches b ON b.batch_id = r.batch_id
+        WHERE b.suite_id = %s
+        """, (suite_id,),
+    )
+    # 未归属请求挂在批次上而不是某一轮（绝不按时间窗硬塞给一轮），所以按 batch_id 取。
+    requests = _rows(
+        """
+        SELECT m.batch_id, m.benchmark_id, m.attribution, m.termination,
+               m.usage_status, m.input_tokens, m.output_tokens
+        FROM model_requests m JOIN batches b ON b.batch_id = m.batch_id
         WHERE b.suite_id = %s
         """, (suite_id,),
     )
@@ -104,11 +114,48 @@ def mode_summary(suite_id: str) -> list[dict[str, Any]]:
                 if r["duration_ms"] is not None and r["engine_ms"] is not None
             ]),
             "usage_sources": breakdown,
+            "model_calls": _model_call_block(
+                measured,
+                [r for r in requests if r["batch_id"] in {x["batch_id"] for x in rows}],
+            ),
         }
         for verdict in VERDICTS:
             row[verdict.lower() + "_count"] = sum(r["verdict"] == verdict for r in measured)
         result.append(row)
     return result
+
+
+ATTRIBUTIONS = ("attributed", "late", "unattributed", "rejected")
+
+
+def _model_call_block(runs: list[dict[str, Any]], requests: list[dict[str, Any]]) -> dict[str, Any]:
+    """逐请求采集的覆盖情况。**没开采集、开着没采到、真的 0 次是三件事。**
+
+    token 只把 `usage_status = observed` 的加起来，并同时给出覆盖数，
+    所以这是「已观测小计」，不是整轮 token；一条都没观测到时给 None 而不是 0。
+    """
+    statuses = [r.get("model_calls_status") or "disabled" for r in runs]
+    observed_usage = [r for r in requests if r.get("usage_status") == "observed"]
+    counted = [r for r in requests if r.get("attribution") in ("attributed", "late")]
+    inputs = [r["input_tokens"] for r in observed_usage if r.get("input_tokens") is not None]
+    outputs = [r["output_tokens"] for r in observed_usage if r.get("output_tokens") is not None]
+    return {
+        "runs_observed": statuses.count("observed"),
+        "runs_unavailable": statuses.count("unavailable"),
+        "runs_disabled": statuses.count("disabled"),
+        "requests": len(requests),
+        **{name: sum(r.get("attribution") == name for r in requests) for name in ATTRIBUTIONS},
+        "failed": sum(
+            1 for r in requests
+            if r.get("termination") not in (None, "completed")
+        ),
+        "usage_observed": len(observed_usage),
+        "usage_missing": len(counted) - len([r for r in counted if r.get("usage_status") == "observed"]),
+        "input_tokens_observed": sum(inputs) if inputs else None,
+        "output_tokens_observed": sum(outputs) if outputs else None,
+        # 网关内部重试看不见，整轮的上游尝试数只能是未知。
+        "upstream_attempts": None,
+    }
 
 
 def matrix(suite_id: str) -> tuple[list[str], list[dict[str, Any]]]:
@@ -188,6 +235,55 @@ def get_usage(benchmark_id: str) -> list[dict[str, Any]]:
         "SELECT * FROM usage_samples WHERE benchmark_id = %s ORDER BY source",
         (benchmark_id,),
     )
+
+
+def get_model_requests(benchmark_id: str) -> dict[str, Any]:
+    """这一轮的逐请求时间线，外加同批次**未归属**的请求。
+
+    未归属请求单列，不并进这一轮的计数——它属于这个批次但不属于任何一轮，
+    按时间窗硬塞给某一轮正是这套账本要消灭的东西。
+    """
+    owned = _rows(
+        "SELECT * FROM model_requests WHERE benchmark_id = %s ORDER BY sequence",
+        (benchmark_id,),
+    )
+    orphans = _rows(
+        """
+        SELECT m.* FROM model_requests m
+        WHERE m.benchmark_id IS NULL
+          AND m.batch_id = (SELECT batch_id FROM runs WHERE benchmark_id = %s)
+        ORDER BY m.sequence
+        """,
+        (benchmark_id,),
+    )
+    return {"requests": owned, "orphans": orphans, "timing": _request_timing(owned)}
+
+
+def _request_timing(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """请求耗时之和，以及它**能不能**跟整轮耗时比。
+
+    两条都要说清楚，否则这个数会被当成「整轮里模型占了多久」：
+
+    - 请求之间有产品自己的处理时间，所以**之和永远小于整轮**，差值不是任何单一成因。
+    - 请求如果在时间上重叠（并发），相加就更没有意义——那会把同一段墙钟算两遍。
+      这里真的去查重叠，而不是假设串行。
+    """
+    durations = [r["duration_ms"] for r in rows if r.get("duration_ms") is not None]
+    spans = sorted(
+        (r["received_at"], r["ended_at"]) for r in rows
+        if r.get("received_at") and r.get("ended_at")
+    )
+    overlapping = any(
+        later[0] < earlier[1] for earlier, later in zip(spans, spans[1:])
+    )
+    return {
+        "sum_ms": sum(durations) if durations else None,
+        "measured": len(durations),
+        "total": len(rows),
+        "overlapping": overlapping,
+        # 有一条没测到时长，「之和」就不是完整的和，得说出来。
+        "partial": len(durations) < len(rows),
+    }
 
 
 def reconcile(suite_id: str) -> list[dict[str, Any]]:

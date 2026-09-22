@@ -807,6 +807,12 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
 所以入口端口必须**固定**（`BENCH_COLLECTOR_PORT`，默认 3312），产品配置里存的是 URL。
 默认关闭；回退时**光设回 0 不够**，产品的 baseUrl 也得改回直连 NewAPI。
 
+已入库并上报告：`model_requests` 表 + `runs.model_calls_status`，
+`/run/<id>` 有逐请求时间线，`/suite/<id>` 有覆盖汇总。
+⚠️ **`model_requests.benchmark_id` 允许 NULL，外键挂在 `batch_id` 上**——
+未归属请求属于批次不属于任何一轮，硬塞给某一轮正是这套账本要消灭的东西。
+⚠️ 页面把整轮耗时和请求耗时之和**并列但明说不能相减**，并真的去查请求有没有时间重叠。
+
 ⚠️ **`RunRecord.model_calls` 三态，别把 `disabled` 和 0 次调用混了**：
 `disabled`（没开采集）/ `observed`（确实采到）/ `unavailable`（开着却一个请求都没经过）。
 最后一态几乎一定是产品的 baseUrl 没指过来，记 0 就成了六-3 那种静默漏记。

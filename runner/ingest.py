@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .db import DatabaseError, connect, to_millis, to_utc
+from .modelproxy import LedgerError, load_ledger
 from .models import JsonObject, now_iso, observed_tool_count
 from .report import ReportError, iter_jsonl, usage_samples_of
 
@@ -41,6 +42,7 @@ class IngestResult:
     runs: int
     checks: int
     usage_samples: int
+    model_requests: int = 0
 
 
 def suite_id_for(name: str) -> str:
@@ -132,6 +134,7 @@ def _run_row(record: JsonObject, batch_id: str) -> tuple[Any, ...]:
         to_millis(turn.get("duration_seconds")),
         to_millis(turn.get("first_delta_seconds")),
         to_millis(turn.get("engine_seconds")),
+        (record.get("model_calls") or {}).get("status") or "disabled",
         turn.get("terminated_by"),
         turn.get("stop_reason"),
         observed_tool_count(turn),
@@ -147,13 +150,14 @@ def _run_row(record: JsonObject, batch_id: str) -> tuple[Any, ...]:
 RUN_SQL = """
 INSERT INTO runs (benchmark_id, batch_id, position, case_name, run_no, prompt,
     session_key, run_id, verdict, requested_model, duration_ms, first_delta_ms,
-    engine_ms, terminated_by, stop_reason, tool_call_count, answer_preview,
-    transcript_path, note, started_at, ended_at, created_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    engine_ms, model_calls_status, terminated_by, stop_reason, tool_call_count,
+    answer_preview, transcript_path, note, started_at, ended_at, created_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON DUPLICATE KEY UPDATE
     batch_id=VALUES(batch_id), verdict=VALUES(verdict),
     requested_model=VALUES(requested_model), duration_ms=VALUES(duration_ms),
     first_delta_ms=VALUES(first_delta_ms), engine_ms=VALUES(engine_ms),
+    model_calls_status=VALUES(model_calls_status),
     terminated_by=VALUES(terminated_by),
     stop_reason=VALUES(stop_reason), tool_call_count=VALUES(tool_call_count),
     answer_preview=VALUES(answer_preview), transcript_path=VALUES(transcript_path),
@@ -178,6 +182,106 @@ ON DUPLICATE KEY UPDATE
     cost_usd=VALUES(cost_usd), api_calls=VALUES(api_calls), error_calls=VALUES(error_calls),
     matched_by=VALUES(matched_by), sampled_at=VALUES(sampled_at), raw=VALUES(raw)
 """
+
+
+MODEL_REQUEST_SQL = """
+INSERT INTO model_requests (request_id, batch_id, benchmark_id, proxy_id, sequence,
+    attribution, attribution_source, product, protocol, requested_model, response_model,
+    is_stream, http_status, termination, first_output_ms, duration_ms, input_tokens,
+    output_tokens, total_tokens, cache_read_tokens, usage_status, output_events,
+    upstream_request_id, upstream_attempts, error_kind, received_at, ended_at, raw)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s, %s, %s, %s)
+ON DUPLICATE KEY UPDATE
+    benchmark_id=VALUES(benchmark_id), attribution=VALUES(attribution),
+    attribution_source=VALUES(attribution_source), response_model=VALUES(response_model),
+    http_status=VALUES(http_status), termination=VALUES(termination),
+    first_output_ms=VALUES(first_output_ms), duration_ms=VALUES(duration_ms),
+    input_tokens=VALUES(input_tokens), output_tokens=VALUES(output_tokens),
+    total_tokens=VALUES(total_tokens), cache_read_tokens=VALUES(cache_read_tokens),
+    usage_status=VALUES(usage_status), output_events=VALUES(output_events),
+    upstream_request_id=VALUES(upstream_request_id), error_kind=VALUES(error_kind),
+    ended_at=VALUES(ended_at), raw=VALUES(raw)
+"""
+
+
+def _model_request_row(
+    request: JsonObject, batch_id: str, benchmark_id: str | None
+) -> tuple[Any, ...]:
+    usage = request.get("usage") if isinstance(request.get("usage"), dict) else {}
+    return (
+        request.get("request_id"),
+        batch_id,
+        benchmark_id,
+        request.get("proxy_id") or "",
+        request.get("sequence") or 0,
+        request.get("attribution") or "unattributed",
+        request.get("attribution_source") or "",
+        request.get("product"),
+        request.get("protocol") or "",
+        request.get("requested_model"),
+        request.get("response_model"),
+        request.get("stream"),
+        request.get("http_status"),
+        request.get("termination"),
+        to_millis(request.get("first_output_seconds")),
+        to_millis(request.get("duration_seconds")),
+        usage.get("prompt_tokens"),
+        usage.get("completion_tokens"),
+        usage.get("total_tokens"),
+        usage.get("prompt_cache_hit_tokens") or (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+        request.get("usage_status") or "missing",
+        request.get("output_events"),
+        request.get("upstream_request_id"),
+        # 恒为 None：一次客户端请求不等于一次上游尝试（`ModelRequestRecord` 的规矩）。
+        request.get("upstream_attempts"),
+        request.get("error_kind") or "",
+        to_utc(request.get("received_at")),
+        to_utc(request.get("ended_at")),
+        json.dumps(request, ensure_ascii=False),
+    )
+
+
+def _model_request_rows(records: list[JsonObject], batch_id: str) -> list[tuple[Any, ...]]:
+    """逐请求账本入库。
+
+    两个来源合并，按 `request_id` 去重：
+
+    1. 每轮 `RunRecord.model_calls.requests`——归属到某一轮的那些。
+    2. 批次的 `model-requests.jsonl`——**补上未归属和被拒的请求**。
+       它们属于这个批次但不属于任何一轮，`benchmark_id` 留 NULL。
+       只靠来源 1 的话，未归属请求永远进不了报告，而「没有未归属请求」和
+       「有但我们没记」看起来一模一样。
+
+    账本读不到就只入来源 1（换台机器重放时会这样），**不伪造**缺失的那部分。
+    """
+    rows: dict[str, tuple[Any, ...]] = {}
+    ledgers: set[str] = set()
+    for record in records:
+        calls = record.get("model_calls")
+        if not isinstance(calls, dict):
+            continue
+        if calls.get("ledger_path"):
+            ledgers.add(str(calls["ledger_path"]))
+        for request in calls.get("requests") or []:
+            if isinstance(request, dict) and request.get("request_id"):
+                rows[str(request["request_id"])] = _model_request_row(
+                    request, batch_id, record.get("benchmark_id")
+                )
+    for path in sorted(ledgers):
+        try:
+            # 用 load_ledger 而不是自己读行：它会合并 open/closed 两行，
+            # 并把只有 open 的记录标成 incomplete。自己再实现一遍迟早会漏掉那一步，
+            # 于是采集器中断看起来就跟正常请求一样了。
+            entries = load_ledger(Path(path))
+        except LedgerError:
+            continue
+        for entry in entries:
+            if entry.request_id not in rows:
+                rows[entry.request_id] = _model_request_row(
+                    entry.to_json(), batch_id, None
+                )
+    return list(rows.values())
 
 
 def ingest_file(
@@ -222,10 +326,12 @@ def ingest_file(
     if connection is not None:
         _widen_usage_source(connection)
         _ensure_engine_column(connection)
+        _ensure_model_calls(connection)
         return _write(connection, meta, suite_name, records, started_at, ended_at)
     with connect() as fresh:
         _widen_usage_source(fresh)
         _ensure_engine_column(fresh)
+        _ensure_model_calls(fresh)
         return _write(fresh, meta, suite_name, records, started_at, ended_at)
 
 
@@ -259,6 +365,75 @@ def _widen_usage_source(connection: Any) -> None:
     except Exception as exc:  # noqa: BLE001 —— 迁移失败不该拦住入库
         print(f"提示：usage_samples.source 放宽失败，新来源可能存不进去：{exc}")
     _SOURCE_WIDENED = True
+
+
+_MODEL_CALLS_READY = False
+
+# ⚠️ 与 `infra/schema.sql` 的 model_requests 是有意重复的两份：那份只在数据目录
+# 为空时由 MySQL 镜像执行一次，已有的库永远跑不到。加列时两处都要改。
+_MODEL_REQUESTS_DDL = """
+CREATE TABLE IF NOT EXISTS model_requests (
+    request_id         VARCHAR(160) NOT NULL PRIMARY KEY,
+    batch_id           VARCHAR(64)  NOT NULL,
+    benchmark_id       VARCHAR(128) NULL,
+    proxy_id           VARCHAR(128) NOT NULL DEFAULT '',
+    sequence           INT NOT NULL DEFAULT 0,
+    attribution        VARCHAR(16)  NOT NULL DEFAULT 'unattributed',
+    attribution_source VARCHAR(64)  NOT NULL DEFAULT '',
+    product            VARCHAR(32)  NULL,
+    protocol           VARCHAR(32)  NOT NULL DEFAULT '',
+    requested_model    VARCHAR(128) NULL,
+    response_model     VARCHAR(128) NULL,
+    is_stream          TINYINT(1)   NULL,
+    http_status        INT NULL,
+    termination        VARCHAR(32)  NULL,
+    first_output_ms    INT NULL,
+    duration_ms        INT NULL,
+    input_tokens       INT NULL,
+    output_tokens      INT NULL,
+    total_tokens       INT NULL,
+    cache_read_tokens  INT NULL,
+    usage_status       VARCHAR(16)  NOT NULL DEFAULT 'missing',
+    output_events      INT NULL,
+    upstream_request_id VARCHAR(128) NULL,
+    upstream_attempts  INT NULL,
+    error_kind         VARCHAR(64)  NOT NULL DEFAULT '',
+    received_at        DATETIME(3)  NULL,
+    ended_at           DATETIME(3)  NULL,
+    raw                JSON NULL,
+    KEY idx_mreq_run (benchmark_id, sequence),
+    KEY idx_mreq_batch (batch_id, sequence),
+    KEY idx_mreq_attribution (attribution),
+    KEY idx_mreq_upstream (upstream_request_id),
+    CONSTRAINT fk_mreq_batch FOREIGN KEY (batch_id)
+        REFERENCES batches (batch_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+def _ensure_model_calls(connection: Any) -> None:
+    """给已有的库补 `runs.model_calls_status` 和 `model_requests` 表。
+
+    **和 `_ensure_engine_column` 一样不吞异常**：`_run_row` 已经无条件多传了一个值，
+    列不存在的话每条 INSERT 都会失败，整批入不了库。与其让人对着
+    "Unknown column 'model_calls_status'" 猜，不如在这里就炸。
+    """
+    global _MODEL_CALLS_READY
+    if _MODEL_CALLS_READY:
+        return
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS"
+            " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'runs'"
+            " AND COLUMN_NAME = 'model_calls_status'"
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                "ALTER TABLE runs ADD COLUMN model_calls_status VARCHAR(16)"
+                " NOT NULL DEFAULT 'disabled' AFTER engine_ms"
+            )
+        cursor.execute(_MODEL_REQUESTS_DDL)
+    _MODEL_CALLS_READY = True
 
 
 _ENGINE_COLUMN_READY = False
@@ -349,16 +524,21 @@ def _write(
                     )
             usage_rows.extend(_usage_rows(record))
 
+        request_rows = _model_request_rows(records, meta.batch_id)
+
         if check_rows:
             cursor.executemany(CHECK_SQL, check_rows)
         if usage_rows:
             cursor.executemany(USAGE_SQL, usage_rows)
+        if request_rows:
+            cursor.executemany(MODEL_REQUEST_SQL, request_rows)
 
     return IngestResult(
         batch_id=meta.batch_id,
         runs=len(run_rows),
         checks=len(check_rows),
         usage_samples=len(usage_rows),
+        model_requests=len(request_rows),
     )
 
 
@@ -418,6 +598,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     f"{path} → batch {result.batch_id}："
                     f"{result.runs} 轮 / {result.checks} 条断言 / {result.usage_samples} 条用量"
+                    f" / {result.model_requests} 条模型请求"
                 )
     except (DatabaseError, IngestError) as exc:
         print(f"入库失败：{exc}")

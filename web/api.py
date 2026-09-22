@@ -464,6 +464,7 @@ def run_detail(request: Request, benchmark_id: str) -> HTMLResponse:
         run=run,
         checks=queries.get_checks(benchmark_id),
         usage=queries.get_usage(benchmark_id),
+        model_calls=queries.get_model_requests(benchmark_id),
     )
 
 
