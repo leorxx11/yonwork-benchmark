@@ -511,7 +511,7 @@ def finish_job(
 
 @contextmanager
 def exclusive_worker_lock() -> Iterator[str]:
-    """全局只允许一个 Worker 在跑，拿不到锁就拒绝启动。
+    """Worker 和直接 CLI 跑批共用的排他锁，拿不到锁就拒绝执行。
 
     这不是为了将来好扩展才留的余地，恰恰相反：NewAPI 后台用量按时间窗匹配，
     并发跑批必然张冠李戴（CLAUDE.md 七-5），所以「同时只有一个 Worker」
@@ -534,9 +534,10 @@ def exclusive_worker_lock() -> Iterator[str]:
             row = cursor.fetchone()
         if not row or row["acquired"] != 1:
             raise WorkerAlreadyRunning(
-                "已经有另一个 Worker 在跑（MySQL 锁 "
+                "已有 Worker 或 CLI 跑批持锁（MySQL 锁 "
                 f"{WORKER_LOCK_NAME} 被占用）。"
-                "串行是刻意的：并发跑批会让 NewAPI 用量按时间窗张冠李戴。"
+                "请等待 CLI 结束，或先停止空闲 Worker 后再直接跑 CLI。"
+                "并发跑批会让 NewAPI 用量按时间窗张冠李戴。"
             )
         yield WORKER_LOCK_NAME
     except pymysql.MySQLError as exc:

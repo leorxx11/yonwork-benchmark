@@ -17,6 +17,8 @@ from .catalog import CatalogError, list_model_choices
 from .client import DEFAULT_TURN_TIMEOUT_SECONDS
 from .discovery import DiscoveryError, discover
 from .drivers import DRIVERS, DriverError, DriverSpec, build_driver
+from .db import DatabaseError
+from .job_store import WorkerAlreadyRunning, exclusive_worker_lock
 from .models import EXIT_CODES, Verdict, expand_cases
 from .report import build_database, export_xlsx, summarize
 from .transport import TransportError
@@ -153,6 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         for item in items:
             _log(f"  {item.position + 1:>3}. {item.case_name}#{item.run_no} {item.prompt[:40]}")
+        driver.close()
         return 0
 
     options = BatchOptions(
@@ -163,10 +166,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
-        records = run_batch(items, driver=driver, options=options, report=_log)
+        # 和 Worker 共用锁；CLI 也会污染时间窗，不能绕开串行约束。
+        with exclusive_worker_lock():
+            records = run_batch(items, driver=driver, options=options, report=_log)
+    except (WorkerAlreadyRunning, DatabaseError) as exc:
+        _log(f"无法开始跑批：{exc}")
+        return EXIT_USAGE
     except KeyboardInterrupt:
         _log("已中断；已完成的轮次都在 " + str(results_path))
         records = []
+    finally:
+        driver.close()
 
     if not results_path.is_file():
         _log("没有任何结果落盘")

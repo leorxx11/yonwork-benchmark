@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+from statistics import median
 
 from runner.db import connect
-from runner.models import Verdict
+from runner.models import USAGE_SOURCES, Verdict
 
 
 VERDICTS = [item.value for item in Verdict]
@@ -41,59 +42,73 @@ def get_suite(suite_id: str) -> dict[str, Any] | None:
     return _row("SELECT * FROM suite_runs WHERE suite_id = %s", (suite_id,))
 
 
+def _distribution(values: list[Any]) -> dict[str, Any]:
+    known = [value for value in values if value is not None]
+    return {
+        "n": len(known), "median": median(known) if known else None,
+        "min": min(known) if known else None, "max": max(known) if known else None,
+    }
+
+
 def mode_summary(suite_id: str) -> list[dict[str, Any]]:
-    """一行一个模式（产品 × 模型），不是一行一个批次。
-
-    同一个模式可能跑过多个批次（重跑、补跑），横向对比时它们应该合并；
-    按批次分组会让「四个模式」变成「N 个批次」，一眼看过去就错了。
-
-    注意这里只做**聚合**，不做任何判定：verdict 是 assertions/ 早就算好的。
-    """
-    return _rows(
+    """按请求模式描述已有观测。用量按来源分列，绝不逐轮回落后混加。"""
+    runs = _rows(
         """
-        SELECT b.product, b.model_mode,
-               MIN(b.model_ref) AS model_ref,
-               COUNT(DISTINCT b.batch_id) AS batch_count,
-               MIN(b.started_at) AS started_at,
-               COUNT(r.benchmark_id) AS total,
-               SUM(r.verdict = 'Pass')    AS pass_count,
-               SUM(r.verdict = 'Fail')    AS fail_count,
-               SUM(r.verdict = 'Timeout') AS timeout_count,
-               SUM(r.verdict = 'Error')   AS error_count,
-               SUM(r.verdict = 'Invalid') AS invalid_count,
-               ROUND(AVG(r.duration_ms))  AS avg_ms,
-               MAX(r.duration_ms)         AS max_ms,
-               -- 耗时必须拆开看，否则就是拿冷启动跟常驻服务比：
-               -- WorkBuddy 每轮起一个新进程（实测外层 16.7s / 内部 3.1s），
-               -- YonWork 是常驻 Host API，engine_ms 恒为 NULL。
-               ROUND(AVG(r.engine_ms))    AS avg_engine_ms,
-               ROUND(AVG(r.duration_ms - r.engine_ms)) AS avg_startup_ms,
-               COUNT(r.engine_ms)         AS engine_rows,
-               -- 来源优先级和 models.USAGE_SOURCES 一致：
-               -- 端上 HTTP → 会话 JSONL → WorkBuddy CLI → NewAPI 后台。
-               -- ⚠️ 这里**必须覆盖每个产品的来源**。漏掉 workbuddy-cli 时
-               -- WorkBuddy 那一行的 token 会整列显示成空，跟端上漏记（六-3）
-               -- 长得一模一样——2026-09-21 第一次跑横向对比时就是这么撞上的。
-               SUM(COALESCE(d.total_tokens, j.total_tokens, w.total_tokens, n.total_tokens))
-                   AS total_tokens,
-               SUM(d.cost_usd)            AS cost_usd,
-               COUNT(d.id)                AS usage_rows
-        FROM batches b
-        LEFT JOIN runs r ON r.batch_id = b.batch_id
-        LEFT JOIN usage_samples d
-               ON d.benchmark_id = r.benchmark_id AND d.source = 'device-api'
-        LEFT JOIN usage_samples j
-               ON j.benchmark_id = r.benchmark_id AND j.source = 'session-jsonl'
-        LEFT JOIN usage_samples w
-               ON w.benchmark_id = r.benchmark_id AND w.source = 'workbuddy-cli'
-        LEFT JOIN usage_samples n
-               ON n.benchmark_id = r.benchmark_id AND n.source = 'newapi'
+        SELECT b.product, b.model_mode, b.model_ref, b.batch_id, b.started_at,
+               r.benchmark_id, r.case_name, r.verdict, r.duration_ms, r.engine_ms
+        FROM batches b LEFT JOIN runs r ON r.batch_id = b.batch_id
         WHERE b.suite_id = %s
-        GROUP BY b.product, b.model_mode
-        ORDER BY b.product, b.model_mode
-        """,
-        (suite_id,),
+        ORDER BY b.product, b.model_mode, b.batch_id, r.position
+        """, (suite_id,),
     )
+    samples = _rows(
+        """
+        SELECT u.benchmark_id, u.source, u.total_tokens, u.cost_usd, u.model
+        FROM usage_samples u JOIN runs r ON r.benchmark_id = u.benchmark_id
+        JOIN batches b ON b.batch_id = r.batch_id
+        WHERE b.suite_id = %s
+        """, (suite_id,),
+    )
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for run in runs:
+        groups.setdefault((run["product"], run["model_mode"]), []).append(run)
+    result = []
+    for (product, mode), rows in groups.items():
+        ids = {r["benchmark_id"] for r in rows if r["benchmark_id"] is not None}
+        measured = [r for r in rows if r["benchmark_id"] is not None]
+        usage = [sample for sample in samples if sample["benchmark_id"] in ids]
+        sources = list(USAGE_SOURCES) + sorted({u["source"] for u in usage} - set(USAGE_SOURCES))
+        breakdown = []
+        for source in sources:
+            selected = [u for u in usage if u["source"] == source]
+            if not selected:
+                continue
+            tokens = [u["total_tokens"] for u in selected if u["total_tokens"] is not None]
+            costs = [u["cost_usd"] for u in selected if u["cost_usd"] is not None]
+            breakdown.append({
+                "source": source, "token_rows": len(tokens),
+                "total_tokens": sum(tokens) if tokens else None,
+                "cost_rows": len(costs), "cost_usd": sum(costs) if costs else None,
+                "models": sorted({u["model"] for u in selected if u["model"]}),
+            })
+        refs = sorted({r["model_ref"] for r in rows if r["model_ref"]})
+        row = {
+            "product": product, "model_mode": mode, "model_ref": " / ".join(refs),
+            "batch_count": len({r["batch_id"] for r in rows}), "total": len(ids),
+            "case_count": len({r["case_name"] for r in measured}),
+            "usage_rows": len({u["benchmark_id"] for u in usage if u["total_tokens"] is not None}),
+            "wall": _distribution([r["duration_ms"] for r in measured]),
+            "internal": _distribution([r["engine_ms"] for r in measured]),
+            "gap": _distribution([
+                r["duration_ms"] - r["engine_ms"] for r in measured
+                if r["duration_ms"] is not None and r["engine_ms"] is not None
+            ]),
+            "usage_sources": breakdown,
+        }
+        for verdict in VERDICTS:
+            row[verdict.lower() + "_count"] = sum(r["verdict"] == verdict for r in measured)
+        result.append(row)
+    return result
 
 
 def matrix(suite_id: str) -> tuple[list[str], list[dict[str, Any]]]:
@@ -105,7 +120,7 @@ def matrix(suite_id: str) -> tuple[list[str], list[dict[str, Any]]]:
                CONCAT(b.product, ' / ', b.model_mode) AS mode_key,
                COALESCE(d.total_tokens, j.total_tokens, w.total_tokens, n.total_tokens)
                    AS total_tokens,
-               CASE WHEN d.total_tokens IS NOT NULL THEN ''
+               CASE WHEN d.total_tokens IS NOT NULL THEN '端上'
                     WHEN j.total_tokens IS NOT NULL THEN '会话'
                     WHEN w.total_tokens IS NOT NULL THEN 'CLI'
                     WHEN n.total_tokens IS NOT NULL THEN '后台'

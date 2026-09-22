@@ -43,6 +43,8 @@ class SessionUsage:
     # 不从这儿补的话 `turn.tool_calls` 对 YonWork 恒为 0，
     # 「这个 Case 必须用到工具」的断言会稳定误判成「产品没调工具」。
     tool_calls: tuple[str, ...] = ()
+    tool_calls_complete: bool = False
+    tool_calls_error: bool = False
 
     def as_sample(self) -> UsageSample:
         return UsageSample(
@@ -147,6 +149,7 @@ def parse_session_file(path: Path) -> list[SessionUsage]:
     session_id = path.stem
     current: str | None = None
     buckets: dict[str, dict[str, object]] = {}
+    malformed = False
 
     for line in lines:
         if not line.strip():
@@ -154,8 +157,10 @@ def parse_session_file(path: Path) -> list[SessionUsage]:
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
+            malformed = True
             continue
         if not isinstance(record, dict):
+            malformed = True
             continue
 
         if record.get("type") == "session" and isinstance(record.get("id"), str):
@@ -178,7 +183,7 @@ def parse_session_file(path: Path) -> list[SessionUsage]:
                         "input": 0, "output": 0, "total": 0,
                         "cache_read": 0, "cache_write": 0,
                         "model": None, "provider": None, "turns": 0, "ts": None,
-                        "tools": [],
+                        "tools": [], "terminal": False,
                     },
                 )
             else:
@@ -189,6 +194,9 @@ def parse_session_file(path: Path) -> list[SessionUsage]:
             continue
 
         bucket = buckets[current]
+        bucket["terminal"] = message.get("stopReason") in (
+            "stop", "end_turn", "length", "max_tokens", "error", "aborted",
+        )
         # 工具块和 usage 不在同一条消息上：带 toolCall 的那条助手消息也有 usage，
         # 但顺序不保证，所以先收工具再判 usage，别被 continue 跳过去。
         for name in _tool_names(message):
@@ -223,6 +231,8 @@ def parse_session_file(path: Path) -> list[SessionUsage]:
             provider=bucket["provider"] if isinstance(bucket["provider"], str) else None,
             assistant_turns=_as_int(bucket["turns"]),
             tool_calls=tuple(bucket["tools"]) if isinstance(bucket["tools"], list) else (),
+            tool_calls_complete=bool(bucket["terminal"]) and not malformed,
+            tool_calls_error=malformed,
             timestamp=bucket["ts"] if isinstance(bucket["ts"], str) else None,
             source_path=str(path),
         )

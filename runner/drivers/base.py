@@ -95,7 +95,7 @@ class Driver(Protocol):
         ...
 
     def enrich(self, turn: ChatTurn) -> ChatTurn:
-        """跑完之后从第二来源补齐本轮原材料，补不到就原样返回。
+        """跑完之后补齐原材料，并记录工具观测的完整性、来源和错误。
 
         **为什么需要这一步**：有的产品主通路看不到全部原材料。实测
         YonWork 的 `/api/chat/send` SSE **只有 text 块，没有工具调用**，
@@ -104,7 +104,7 @@ class Driver(Protocol):
         把我们自己的观测盲区算成产品的失败。
 
         ⚠️ 仍然**只搬运不判定**（二-3）：这里只负责把原材料补全，
-        补不到就照实留空，由 assertions 去决定那算不算问题。
+        补不到标 unavailable，读取出错标 error；由 assertions 决定分类。
         """
         ...
 

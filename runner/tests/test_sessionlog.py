@@ -68,6 +68,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(10496, found[0].cache_read_tokens)
         self.assertEqual("deepseek-flash", found[0].model)
         self.assertEqual("idempotency-key", found[0].as_sample().match)
+        self.assertTrue(found[0].tool_calls_complete)
 
     def test_multi_turn_usage_is_summed_per_run(self) -> None:
         path = self._write(
@@ -133,6 +134,14 @@ class ParseTests(unittest.TestCase):
         )
         found = parse_session_file(path)
         self.assertEqual(16188, found[0].total_tokens)
+        self.assertTrue(found[0].tool_calls_error)
+        self.assertFalse(found[0].tool_calls_complete)
+
+    def test_usage_without_terminal_message_does_not_prove_complete_tool_list(self):
+        message = assistant_record()
+        message["message"]["stopReason"] = "toolUse"
+        found = parse_session_file(self._write("partial.jsonl", [user_record("b1"), message]))
+        self.assertFalse(found[0].tool_calls_complete)
 
 
 class DirectoryTests(unittest.TestCase):

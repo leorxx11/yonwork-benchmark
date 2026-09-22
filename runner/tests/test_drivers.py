@@ -373,26 +373,33 @@ class ToolCallVisibilityTests(unittest.TestCase):
         )
 
     def test_tool_calls_are_backfilled_from_the_session_log(self) -> None:
-        found = SimpleNamespace(tool_calls=("read_dir",))
+        found = SimpleNamespace(tool_calls=("read_dir",), tool_calls_complete=True, tool_calls_error=False)
         with patch("runner.drivers.yonwork.collect_one", return_value=found):
             turn = YonWorkDriver().enrich(self._turn())
         self.assertEqual(("read_dir",), turn.tool_calls)
+        self.assertEqual("observed", turn.tool_calls_status)
 
-    def test_sse_wins_when_it_actually_reports_tools(self) -> None:
-        """主通路给了就以它为准，别拿第二来源覆盖。"""
-        with patch("runner.drivers.yonwork.collect_one") as collect:
+    def test_positive_sse_evidence_survives_missing_session(self) -> None:
+        with patch("runner.drivers.yonwork.collect_one", return_value=None):
             turn = YonWorkDriver().enrich(self._turn(("from_sse",)))
-        collect.assert_not_called()
         self.assertEqual(("from_sse",), turn.tool_calls)
+        self.assertEqual("unavailable", turn.tool_calls_status)
 
-    def test_backfill_failure_leaves_the_turn_untouched(self) -> None:
-        """补采失败不改变本轮判定，和用量那三路一个规矩。"""
+    def test_backfill_failure_records_observation_error(self) -> None:
         with patch(
             "runner.drivers.yonwork.collect_one",
             side_effect=SessionLogError("会话文件读不了"),
         ):
             turn = YonWorkDriver().enrich(self._turn())
         self.assertEqual((), turn.tool_calls)
+        self.assertEqual("error", turn.tool_calls_status)
+        self.assertIn("SessionLogError", turn.tool_calls_detail)
+
+    def test_partial_session_cannot_confirm_zero_calls(self):
+        found = SimpleNamespace(tool_calls=(), tool_calls_complete=False, tool_calls_error=False)
+        with patch("runner.drivers.yonwork.collect_one", return_value=found):
+            turn = YonWorkDriver().enrich(self._turn())
+        self.assertEqual("unavailable", turn.tool_calls_status)
 
     def test_nothing_found_is_not_invented(self) -> None:
         with patch("runner.drivers.yonwork.collect_one", return_value=None):

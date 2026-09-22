@@ -30,6 +30,8 @@ def make_turn(**overrides: object) -> ChatTurn:
         terminated_by="chat.complete",
         stop_reason="stop",
         http_status=200,
+        tool_calls_status="observed",
+        tool_calls_source="test",
     )
     defaults.update(overrides)
     return ChatTurn(**defaults)  # type: ignore[arg-type]
@@ -104,6 +106,23 @@ class ArtifactTests(unittest.TestCase):
 
 class ToolCallTests(unittest.TestCase):
     """工具调用：不声明只记录，声明了才判，判不过还要分清是谁的问题。"""
+
+    def test_missing_observation_is_invalid_and_read_error_is_error(self):
+        for status, expected in (("unavailable", Verdict.INVALID), ("error", Verdict.ERROR)):
+            with self.subTest(status=status):
+                result = evaluate(turn=make_turn(tool_calls_status=status),
+                                  expectations=Expectations(min_tool_calls=1))
+                self.assertEqual(expected, result.verdict)
+
+    def test_missing_observation_without_requirement_is_skipped(self):
+        result = evaluate(turn=make_turn(tool_calls_status="unavailable"), expectations=Expectations())
+        self.assertIsNone(verdict_of("tool-calls", result))
+        self.assertEqual(Verdict.PASS, result.verdict)
+
+    def test_positive_evidence_can_satisfy_minimum_even_if_snapshot_is_incomplete(self):
+        result = evaluate(turn=make_turn(tool_calls=("read",), tool_calls_status="unavailable"),
+                          expectations=Expectations(min_tool_calls=1))
+        self.assertEqual(Verdict.PASS, verdict_of("tool-calls", result))
 
     def test_without_a_declaration_it_only_records(self) -> None:
         # 规矩同 max_input_tokens：没声明就不猜。绝大多数 Case 不关心工具。

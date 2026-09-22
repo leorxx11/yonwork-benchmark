@@ -140,18 +140,18 @@ class ChatTurn:
     run_id: str | None = None
     answer: str | None = None
     first_delta_seconds: float | None = None
-    # 产品**自报**的内部执行耗时，不含每轮起进程的冷启动。
-    # `duration_seconds` 一律是外层 wall time（更接近用户感受，所以耗时断言用它）；
-    # 两个都留着才能把冷启动拆出来：冷启动 = duration - engine。
-    # WorkBuddy 实测外层 16.744s、内部只有 3.087s，**13.6s 全是冷启动**，
-    # 直接拿外层跟 YonWork 的常驻服务比就是误比。
-    # YonWork 没有每轮进程这回事，这个字段留空，不要拿 duration 填进去冒充。
+    # CLI 自报的内部耗时，计时边界尚未校准，不能称为纯模型耗时。
+    # 外层减内部仅是两个计时口径的差值，不能全部归因于冷启动。
+    # YonWork 没有对应自报字段，留空；字段名保留以兼容历史数据。
     engine_seconds: float | None = None
     terminated_by: str | None = None
     stop_reason: str | None = None
     final_state: str | None = None
     event_counts: dict[str, int] = field(default_factory=dict)
     tool_calls: tuple[str, ...] = ()
+    tool_calls_status: str = "unavailable"  # observed / unavailable / error
+    tool_calls_source: str = "unavailable"
+    tool_calls_detail: str = ""
     requested_model: str | None = None  # 请求里指定的 modelId，None = 用智能体默认
     requested_model_label: str | None = None  # 该模型的显示名，四模式视图按它分组
     # 这一轮**允许**用工具吗。None = 该产品没有这个开关（YonWork 就是，
@@ -162,6 +162,14 @@ class ChatTurn:
     stream_error: JsonObject | None = None
     http_status: int | None = None
     transcript_path: str | None = None
+
+
+def observed_tool_count(turn: JsonObject) -> int | None:
+    """空列表只有在完整采集时才代表 0；旧记录里的非空列表仍是正向证据。"""
+    calls = turn.get("tool_calls")
+    if isinstance(calls, list) and (calls or turn.get("tool_calls_status") == "observed"):
+        return len(calls)
+    return None
 
 
 # 同一轮的 token 可能有多个来源，谁都可能缺：

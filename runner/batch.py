@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -110,8 +110,13 @@ def run_one(
             # 跟下面一起吞掉的话，新驱动忘了写 enrich 就会静默少一份原材料，
             # 表现成「这个产品从来不调工具」——正是要防的那种假数据。
             raise
-        except Exception as exc:  # noqa: BLE001 —— 补采失败不该改变本轮判定
-            report(f"  ! 原材料补采失败：{type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 —— 工具补采失败交给断言层分类
+            turn = replace(turn, tool_calls_status="error", tool_calls_source="driver-enrich",
+                           tool_calls_detail=f"原材料补采失败：{type(exc).__name__}")
+        if turn.tool_calls_status != "observed":
+            detail = turn.tool_calls_detail or "工具调用未完整采集"
+            notes = (*notes, detail)
+            report(f"  ! {detail}")
 
     usage = None
     for source in USAGE_SOURCES:

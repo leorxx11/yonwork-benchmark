@@ -508,6 +508,10 @@ Please use --model <model_id> to specify a valid model.
 
 ### 自建 NewAPI / 自定义供应商
 
+> 2026-09-22 更新：用户已完成配置，WorkBuddy → 本机 NewAPI 单轮文本请求实测成功，
+> CLI 与后台 token 数一致。下文“未实测”是原始调查时状态；最新证据及未覆盖范围见
+> [接入验收](workbuddy-newapi-validation.md)。
+
 **[官方+代码，未实测]** 支持两种配置入口：
 
 1. WorkBuddy 的 `%USERPROFILE%\.workbuddy\models.json` 定义 model id、完整 `/chat/completions` URL、vendor、API key 和能力；调用时仍只传 `--model <id>`。

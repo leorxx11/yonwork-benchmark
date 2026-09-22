@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import USAGE_SOURCES, JsonObject, RunRecord, Verdict
+from .models import USAGE_SOURCES, JsonObject, RunRecord, Verdict, observed_tool_count
 
 
 SCHEMA = """
@@ -188,7 +188,7 @@ def _row(record: JsonObject) -> JsonObject:
         "engine_seconds": turn.get("engine_seconds"),
         "terminated_by": turn.get("terminated_by"),
         "stop_reason": turn.get("stop_reason"),
-        "tool_call_count": len(tool_calls) if isinstance(tool_calls, list) else None,
+        "tool_call_count": observed_tool_count(turn),
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
         "total_tokens": usage.get("total_tokens"),

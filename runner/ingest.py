@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .db import DatabaseError, connect, to_millis, to_utc
-from .models import JsonObject, now_iso
+from .models import JsonObject, now_iso, observed_tool_count
 from .report import ReportError, iter_jsonl, usage_samples_of
 
 
@@ -134,7 +134,7 @@ def _run_row(record: JsonObject, batch_id: str) -> tuple[Any, ...]:
         to_millis(turn.get("engine_seconds")),
         turn.get("terminated_by"),
         turn.get("stop_reason"),
-        len(tool_calls) if isinstance(tool_calls, list) else None,
+        observed_tool_count(turn),
         answer if isinstance(answer, str) else None,
         turn.get("transcript_path"),
         record.get("note", "") or "",

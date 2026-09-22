@@ -143,10 +143,10 @@ class YonWorkDriver:
         所以 `tool_calls` 对 YonWork **恒为 0**，不是产品没调工具，
         是我们这条通路看不见——拿它去判「工具用例」等于把观测盲区算成产品失败。
 
-        只在 SSE 一个都没给时才补；SSE 哪天开始给了，以主通路为准。
-        补不到就照实留空，**不编**。
+        SSE 的正向调用证据保留，但不能据此认定完整计数。
+        补采缺失和确认零次必须分开，最终由断言层决定如何判定。
         """
-        if turn.tool_calls:
+        if turn.tool_calls_status == "observed":
             return turn
         try:
             found = collect_one(
@@ -154,11 +154,23 @@ class YonWorkDriver:
                 agent_id=self.agent_id,
                 started_at=_parse_iso(turn.started_at),
             )
-        except (SessionLogError, ValueError, TypeError):
-            return turn  # 补采失败不改变本轮判定，和用量那三路一个规矩
-        if found is None or not found.tool_calls:
-            return turn
-        return replace(turn, tool_calls=found.tool_calls)
+        except (SessionLogError, OSError, ValueError, TypeError) as exc:
+            return replace(turn, tool_calls_status="error", tool_calls_source="session-jsonl",
+                           tool_calls_detail=f"会话日志补采失败：{type(exc).__name__}")
+        if found is None:
+            return replace(turn, tool_calls_status="unavailable", tool_calls_source="session-jsonl",
+                           tool_calls_detail="没有找到本轮会话日志，不能确认工具调用次数")
+        calls = found.tool_calls if len(found.tool_calls) >= len(turn.tool_calls) else turn.tool_calls
+        if found.tool_calls_error or not found.tool_calls_complete:
+            return replace(turn, tool_calls=calls, tool_calls_source="session-jsonl",
+                           tool_calls_status="error" if found.tool_calls_error else "unavailable",
+                           tool_calls_detail="会话日志损坏" if found.tool_calls_error else "会话日志尚未包含终止消息")
+        # 不把两个来源相加，以免重复计数；不同来源冲突时保留观测异常。
+        if len(found.tool_calls) < len(turn.tool_calls):
+            return replace(turn, tool_calls_status="unavailable", tool_calls_source="session-jsonl+sse",
+                           tool_calls_detail="会话日志调用数少于 SSE，采集完整性未确认")
+        return replace(turn, tool_calls=found.tool_calls, tool_calls_status="observed",
+                       tool_calls_source="session-jsonl", tool_calls_detail="")
 
     def _backend_usage(self, turn: ChatTurn) -> UsageSample | None:
         if not self._uses_newapi:

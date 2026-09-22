@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import sqlite3
 from dataclasses import replace
+from contextlib import closing
 from unittest.mock import patch
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from runner.client import ChatTimeout, session_key_for
 from runner.drivers import UsageCollection
 from runner.models import ChatTurn, Expectations, TaskItem, UsageSample, Verdict, now_iso
 from runner.report import build_database
+from runner.drivers.yonwork import YonWorkDriver
+from runner.sessionlog import SessionLogError
 
 
 class _FakeDriver:
@@ -73,6 +76,24 @@ def items(count: int) -> list[TaskItem]:
 
 
 class BatchTests(unittest.TestCase):
+    def test_observation_failure_is_persisted_and_does_not_abort_next_round(self):
+        for missing, verdict in ((True, Verdict.INVALID), (False, Verdict.ERROR)):
+            with self.subTest(missing=missing):
+                self.results.unlink(missing_ok=True)
+                driver = _FakeDriver(["ok", "ok"])
+                required = [replace(item, expectations=Expectations(min_tool_calls=1)) for item in items(2)]
+                kwargs = {"return_value": None} if missing else {"side_effect": SessionLogError("read failed")}
+                with patch.object(driver, "enrich", side_effect=YonWorkDriver().enrich), \
+                     patch("runner.drivers.yonwork.collect_one", **kwargs):
+                    records = run_batch(required, driver=driver, options=self.options)
+                self.assertEqual([verdict, verdict], [r.verdict for r in records])
+                saved = json.loads(self.results.read_text().splitlines()[0])
+                self.assertIn("会话日志", saved["note"])
+                self.assertNotEqual("observed", saved["turn"]["tool_calls_status"])
+                db = self.results.with_suffix(".db")
+                build_database(self.results, db)
+                with closing(sqlite3.connect(db)) as connection:
+                    self.assertIsNone(connection.execute("SELECT tool_call_count FROM runs LIMIT 1").fetchone()[0])
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

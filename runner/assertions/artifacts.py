@@ -68,8 +68,11 @@ def _tool_calls_check(turn: ChatTurn, expectations: Expectations | None) -> Chec
     count = len(turn.tool_calls)
     detail = f"{count} 次：{'、'.join(turn.tool_calls) or '无'}"
     wanted = expectations.min_tool_calls if expectations else None
+    observation = f"{turn.tool_calls_detail or '工具调用未完整采集'}（来源 {turn.tool_calls_source}）"
 
     if wanted is None:
+        if turn.tool_calls_status != "observed":
+            return Check.skipped(Layer.ARTIFACT, "tool-calls", f"{observation}；已观察到 {count} 次")
         return Check(Layer.ARTIFACT, "tool-calls", Verdict.PASS, detail)
     if count >= wanted:
         return Check(Layer.ARTIFACT, "tool-calls", Verdict.PASS, f"{detail}（要求 ≥{wanted}）")
@@ -79,6 +82,12 @@ def _tool_calls_check(turn: ChatTurn, expectations: Expectations | None) -> Chec
             "tool-calls",
             Verdict.INVALID,
             f"{detail}，但这一批把工具关了——要求 ≥{wanted} 的 Case 不该这么跑",
+        )
+    if turn.tool_calls_status != "observed":
+        return Check(
+            Layer.ARTIFACT, "tool-calls",
+            Verdict.ERROR if turn.tool_calls_status == "error" else Verdict.INVALID,
+            f"{observation}；已观察到 {count} 次，无法验证要求 ≥{wanted}",
         )
     return Check(
         Layer.ARTIFACT,

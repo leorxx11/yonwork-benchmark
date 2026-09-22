@@ -130,8 +130,8 @@ class WorkBuddyDriver:
     实际模型 `deepseek-v4.1-flash`、按 session-id 精确匹配。
 
     ⚠️ **外层 16.744s，内部 duration_ms 只有 3.087s**——
-    每个 case 一个新进程，**冷启动占掉 13.6s**，是模型耗时的 4 倍多。
-    做耗时对比时别拿它直接跟 YonWork 的常驻服务比，那不是同一回事；
+    每个 case 一个新进程，两种计时口径相差 **13.6s**，尚未校准差值的组成。
+    内部耗时可能包含工具和编排，差值不能全部称为冷启动；
     两个数都留着就是为了能把这一段拆出来。
 
     ⚠️ **容器里的 Worker 跑不了这个驱动**：它要起一个 Windows 进程，
@@ -439,8 +439,7 @@ def _build_turn(
         # first_delta 留空：json 模式一次性吐完，本来就没有流式首字这回事
         #（要首字得换 stream-json，那是另一条路）。
         duration_seconds=duration,
-        # CLI 自报的内部耗时。外层减它就是冷启动，实测占 13.6s / 16.7s——
-        # 不把这个数单独拎出来，跟 YonWork 常驻服务比耗时就是在比冷启动。
+        # CLI 自报的内部耗时，可能包含工具和编排；差值不直接归因于冷启动。
         engine_seconds=_seconds(result.get("duration_ms")),
         run_id=session_id if isinstance(session_id, str) else None,
         answer=answer if isinstance(answer, str) else None,
@@ -449,6 +448,8 @@ def _build_turn(
         final_state="error" if is_error else "completed",
         event_counts=dict(counts),
         tool_calls=tuple(tool_calls),
+        tool_calls_status="observed",
+        tool_calls_source="workbuddy-cli",
         requested_model=requested_model,
         requested_model_label=requested_model,
         tools_enabled=tools_enabled,

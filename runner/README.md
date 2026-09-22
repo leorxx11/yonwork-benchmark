@@ -115,8 +115,8 @@ case_sets:
 
 `workbuddy` 有两个用之前必须知道的约束：
 
-- **冷启动很贵。** 实测外层 16.744s、内部 `duration_ms` 3.087s——每个 case 一个新进程，
-  冷启动占 13.6s。耗时数字不能直接跟 YonWork 的常驻服务对比。
+- **两种计时边界不同。** 实测外层 16.744s、CLI 自报内部 `duration_ms` 3.087s；
+  13.6s 是差值，尚不能全部归因于冷启动。内部耗时也不等于纯模型耗时。
 - **容器里的 Worker 跑不了它。** 它要起 Windows 进程，而 compose 里的 worker 看不到
   `/mnt/d` 也没有 WSL interop。要从 Web 控制台跑 WorkBuddy，Worker 得在宿主机原生起。
 
@@ -166,3 +166,17 @@ token 仍按原有来源优先级选择，调用统计优先采用 NewAPI 实采
 ```
 
 全部离线，不需要 YonWork 或数据库运行。
+
+## 观测完整性与串行约束
+
+`ChatTurn.tool_calls_status` 区分 observed / unavailable / error；来源和原因一同写入 JSONL。
+YonWork 会话日志需要有终止消息且无损坏行，才视为完整采集；空列表本身不能证明零次调用。
+声明 `min_tool_calls` 的用例：观测缺失为 Invalid、采集错误为 Error，完整采集后次数不足才为 Fail。
+已看到的正向调用证据足以满足下限时可以通过，但不把部分观测称为完整计数。
+没有声明下限时，缺失观测只标检查未执行。SQLite/MySQL 的缺失调用数为 NULL。
+历史结果不自动重判；重新入库时没有完整性字段的旧空列表会保守显示为 NULL。
+
+`python -m runner` 的实际跑批现在需要数据库排他锁，与 Worker 共用。
+拿不到锁或数据库不可用时在发起轮次前退出，退出码 64；`--dry-run` 不要求锁。
+Worker 常驻持锁，因此直接 CLI 运行前应停止它；推荐通过 Web 队列执行。
+该锁不能阻止用户手工调用产品或外部程序使用相同网关令牌。

@@ -9,8 +9,8 @@
   <div>
     <h2>{{ suite.name }}</h2>
     <p class="hint">
-      一个<strong>模式</strong> = 一个产品 × 一个模型。同一个模式跑过多个批次时会合并统计，
-      所以下面的行数是模式数，不是批次数。
+      一个<strong>模式</strong> = 一个产品 × 一种模型请求方式。同一模式的多个批次合并展示。
+      不指定模型与显式选择默认模型分别保留，不代表两个不同的实际模型。
     </p>
   </div>
   <div class="actions" style="margin:0">
@@ -29,7 +29,7 @@
   {{ ui.tile((100 * passed / total) | round(1) ~ '%' if total else '—', '通过率') }}
   {{ ui.tile(modes | length, '模式数') }}
   {{ ui.tile(batch_count, '批次数') }}
-  {{ ui.tile(usage_rows ~ ' / ' ~ total, '端上采到用量的轮次') }}
+  {{ ui.tile(usage_rows ~ ' / ' ~ total, '至少一个来源有 token 的轮次') }}
 </div>
 
 <h2>各模式判定分布</h2>
@@ -40,11 +40,10 @@
   <tr>
     <th>产品 / 模型</th><th style="width:30%">判定分布</th>
     <th class="num">轮次</th>
-    <th class="num">平均耗时<br><span style="font-weight:400;font-size:11px">外层 wall</span></th>
-    <th class="num">其中模型<br><span style="font-weight:400;font-size:11px">产品自报</span></th>
-    <th class="num">其中冷启动<br><span style="font-weight:400;font-size:11px">每轮起进程</span></th>
-    <th class="num">最慢</th>
-    <th class="num">总 token<br><span style="font-weight:400;font-size:11px">端上优先，缺则后台</span></th><th class="num">批次</th>
+    <th class="num">外层耗时</th>
+    <th class="num">CLI 自报内部耗时</th>
+    <th class="num">外层 − 内部差值</th>
+    <th class="num">批次 / Case</th>
   </tr>
   {% for row in modes %}
   <tr>
@@ -54,35 +53,40 @@
     </td>
     <td>{{ ui.verdict_bar(row, verdict_order) }}</td>
     <td class="num">{{ row.total | int }}</td>
-    <td class="num">{{ row.avg_ms | ms }}</td>
-    {# 常驻服务没有「每轮起进程」这回事，两列留白而不是填 0——
-       填 0 会读成「冷启动开销为零」，那是个结论，不是事实。 #}
-    <td class="num {% if not row.engine_rows %}missing{% endif %}">
-      {{ row.avg_engine_ms | ms if row.engine_rows else '不适用' }}
+    {% for stats in [row.wall, row.internal, row.gap] %}
+    <td class="num">
+      {% if stats.n %}
+      {{ stats.median | ms }}<div class="label">{{ stats.min | ms }} ～ {{ stats.max | ms }} · n={{ stats.n }}</div>
+      {% else %}未采集{% endif %}
     </td>
-    <td class="num {% if not row.engine_rows %}missing{% endif %}">
-      {{ row.avg_startup_ms | ms if row.engine_rows else '不适用' }}
-    </td>
-    <td class="num">{{ row.max_ms | ms }}</td>
-    <td class="num {% if not row.total_tokens %}missing{% endif %}">{{ row.total_tokens | num }}</td>
-    <td class="num">{{ row.batch_count | int }}</td>
+    {% endfor %}
+    <td class="num">{{ row.batch_count }} / {{ row.case_count }}</td>
   </tr>
   {% endfor %}
 </table>
 
 <p class="hint" style="margin-top:14px">
-  ⚠️ <strong>跨产品比耗时前先看后两列。</strong>「平均耗时」是外层 wall time，
-  对 WorkBuddy 这类<strong>每轮起一个新进程</strong>的产品，里面含着冷启动；
-  YonWork 走常驻 Host API，没有这一段，所以两列显示「不适用」。
-  直接拿外层相减等于在比冷启动——实测 WorkBuddy 外层 16.7s 里有 13.6s 是冷启动，
-  是模型耗时的 4 倍多。要比模型本身，看「其中模型」那一列。
+  耗时显示中位数、最小值～最大值和有效样本数，包含已记录耗时的所有判定。
+  CLI 内部耗时可能包含工具执行和编排，不能视为纯模型耗时；差值不能全部归因于冷启动。
+  同一模式包含多个 Case 或不同实际模型时，这些数字只描述混合样本；按同一 Case、
+  实际模型、工具权限和工作目录控制条件后才适合比较。
 </p>
 
-<p class="hint" style="margin-top:14px">
-  「端上采到用量的轮次」是 {{ usage_rows }}/{{ total }}：端上
-  <code>/api/usage/recent-token-history</code> 在漏记，这是已知的产品问题，不是跑批失败。
-  所以「总 token」那列回落到了 NewAPI 后台数字（只有走 newapi 模式的轮次才有）。
-  逐轮差异看 <a href="/reconcile/{{ suite.suite_id }}">对账页</a>。
-</p>
+<h2>各来源用量</h2>
+<p class="hint">各行独立统计，不能相加。覆盖不足时总量只代表已采到的轮次；token 不等于费用。
+  比较前固定来源和用例条件。跨来源差异用于<a href="/reconcile/{{ suite.suite_id }}">对账</a>。</p>
+<table>
+  <tr><th>产品 / 请求模式</th><th>来源 / 实际模型</th><th class="num">token 总量</th>
+      <th class="num">token 覆盖</th><th class="num">费用 USD / 覆盖</th></tr>
+  {% for row in modes %}
+    {% for usage in row.usage_sources %}
+    <tr><td>{{ row.product }} / {{ row.model_mode }}</td>
+        <td>{{ usage.source }}<div class="label">{{ usage.models | join(' / ') }}</div></td>
+        <td class="num">{{ usage.total_tokens | num }}</td>
+        <td class="num">{{ usage.token_rows }} / {{ row.total }}</td>
+        <td class="num">{{ usage.cost_usd if usage.cost_usd is not none else '未采集' }} · {{ usage.cost_rows }} / {{ row.total }}</td></tr>
+    {% else %}<tr><td>{{ row.product }} / {{ row.model_mode }}</td><td colspan="4">未采集到用量</td></tr>{% endfor %}
+  {% endfor %}
+</table>
 
 {% endblock %}
