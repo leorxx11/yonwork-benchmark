@@ -38,15 +38,13 @@ services:
     environment:
       TZ: Asia/Shanghai
       SESSION_SECRET: ${SESSION_SECRET:?请先运行 ./scripts/bootstrap.sh}
-      # 2026-09-22 实测：NewAPI 的 HTTP 连接池会被污染——复用到已经死掉的连接后，
-      # 新请求排在上面直到读超时，表现为「NewAPI 突然变慢几分钟」，重启即恢复。
-      # 同一容器里用真 key 直连 DeepSeek 是 1～2s（3/3），走 NewAPI 转发却挂几分钟，
-      # 所以既不是网络也不是上游。IDLE_CONN_TIMEOUT 让空闲连接尽早丢弃，
-      # RELAY_TIMEOUT 把「挂几分钟」变成有界失败——**挂住比失败更糟**，
-      # 因为一轮 benchmark 会被记成产品 Timeout（见 docs/newapi-stall.md）。
-      IDLE_CONN_TIMEOUT: ${NEWAPI_IDLE_CONN_TIMEOUT:-30}
-      MAX_IDLE_CONNS: ${NEWAPI_MAX_IDLE_CONNS:-8}
-      CONNECT_TIMEOUT: ${NEWAPI_CONNECT_TIMEOUT:-10}
+      # v1.0.0-rc.38 实际读取 RELAY_*；无前缀的旧变量不会生效。
+      # DeepSeek 渠道另设 setting.http_protocol=http1，见 docs/newapi-stall.md。
+      RELAY_IDLE_CONN_TIMEOUT: ${NEWAPI_IDLE_CONN_TIMEOUT:-30}
+      RELAY_MAX_IDLE_CONNS: ${NEWAPI_MAX_IDLE_CONNS:-8}
+      # HTTP/1.1 下负值禁止空闲连接回池，绕过本机复用连接间歇性卡住的问题。
+      RELAY_MAX_IDLE_CONNS_PER_HOST: ${NEWAPI_MAX_IDLE_CONNS_PER_HOST:--1}
+      RELAY_RESPONSE_HEADER_TIMEOUT: ${NEWAPI_RESPONSE_HEADER_TIMEOUT:-60}
       RELAY_TIMEOUT: ${NEWAPI_RELAY_TIMEOUT:-180}
       STREAMING_TIMEOUT: ${NEWAPI_STREAMING_TIMEOUT:-180}
     healthcheck:

@@ -17,6 +17,11 @@ docker compose down       # 停（数据留在 ./data）
 - 存储 SQLite，落在 `./data/`（root 属主，容器里写的）。要上 MySQL 见 compose 里的注释。
 - 账号密码在 `credentials.env`（chmod 600，已 gitignore）。
 
+统一代理超时的处理见 [排查记录](../docs/newapi-stall.md)。本机 DeepSeek 渠道需设
+`setting.http_protocol=http1`，配合 Compose 的 `RELAY_MAX_IDLE_CONNS_PER_HOST=-1`
+关闭上游空闲连接复用；换机新建渠道时也要设置。跑批前用
+`.venv/bin/python scripts/probe_newapi.py --stream`（仓库根目录执行）做真实模型探活。
+
 ## 拿系统访问令牌
 
 `scripts/newapi_stats.ps1` 靠它调 `/api/log/self`。当前版本生成令牌要过一道安全验证（要重输密码），

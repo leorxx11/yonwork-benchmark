@@ -22,6 +22,13 @@ services:
       - TZ=Asia/Shanghai
       # 不把会话签名密钥写进仓库。Compose 会自动读取同目录的 .env。
       - SESSION_SECRET=${SESSION_SECRET:?请在 newapi/.env 中设置 SESSION_SECRET}
+      # 与根 compose.yml 保持一致；DeepSeek 渠道的 http1 设置另存于数据库。
+      - RELAY_IDLE_CONN_TIMEOUT=${NEWAPI_IDLE_CONN_TIMEOUT:-30}
+      - RELAY_MAX_IDLE_CONNS=${NEWAPI_MAX_IDLE_CONNS:-8}
+      - RELAY_MAX_IDLE_CONNS_PER_HOST=${NEWAPI_MAX_IDLE_CONNS_PER_HOST:--1}
+      - RELAY_RESPONSE_HEADER_TIMEOUT=${NEWAPI_RESPONSE_HEADER_TIMEOUT:-60}
+      - RELAY_TIMEOUT=${NEWAPI_RELAY_TIMEOUT:-180}
+      - STREAMING_TIMEOUT=${NEWAPI_STREAMING_TIMEOUT:-180}
       # - SQL_DSN=root:123456@tcp(mysql:3306)/new-api
       # - REDIS_CONN_STRING=redis://redis
     healthcheck:

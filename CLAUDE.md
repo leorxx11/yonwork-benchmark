@@ -127,7 +127,7 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name
 | `web/` | 测试控制台 + 报告，FastAPI + Jinja + 本地原生 JS | 在用 |
 | `infra/` | 结果库 MySQL 8.4（:3307），JSONL 可随时重放 | 在用 |
 | `newapi/` | **被测对象**的模型网关（:3000），不是我们的基础设施 | 在用 |
-| `docs/newapi-stall.md` | NewAPI 连接池挂死的排查记录与处理 | **跑批变慢先看这个** |
+| `docs/newapi-stall.md` | 统一代理超时：无效变量修正、HTTP/1.1 禁复用及残余 TLS 失败 | **跑批变慢先看这个** |
 | `cases/catalog.yaml` | Git 版本化的主用例源，含用例集与断言 | 在用 |
 | `cases/yonwork_benchmark.xlsx` | 旧 prompt 清单和历史结果 | 只作兼容，不再默认读取 |
 | `compose.yml` / `Dockerfile` | MySQL、NewAPI、Web、串行 worker 一键环境 | 在用 |
