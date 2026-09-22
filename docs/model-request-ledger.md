@@ -8,10 +8,10 @@
 `runner/modelproxy/` 已实现，并已接进 `batch.run_batch` / CLI / Worker，
 36 项离线单测（全套 233 项）。**默认关闭**，关着时跑批行为和以前完全一样。
 
-**YonWork 真实端到端已跑通一轮**（2026-09-22，见下「实测」）。
-WorkBuddy 还没经过这个入口跑过批（它的入口能力在
-[入口验证](model-entry-validation.md) 里单独证过，但跑批接线没实测）。
-入库与 Web 报告未做。下面写的是这一层自己的行为，不是整轮覆盖的结论。
+**两个产品的真实端到端各跑通一轮**（2026-09-22，见下「实测」），
+单次文本问答，全程精确关联、没用时间窗。入库与 Web 报告未做；
+工具续答、子代理、取消等场景未跑。下面写的是这一层自己的行为，
+不是整轮覆盖的结论。
 
 | 文件 | 职责 |
 |---|---|
@@ -204,10 +204,12 @@ Worker / CLI 起代理（一个批次一个，proxy_id = batch_id）
 端口固定就是为了这一步只做一次；按
 `docs/model-entry-validation.md` 的结论，**不在测量轮次中反复新建账户**。
 
-## 实测：YonWork 一轮端到端（2026-09-22）
+## 实测：两个产品各一轮端到端（2026-09-22）
 
-批次 `collector-e2e`，`smoke` 的 Case02 跑 1 轮，模型选 YonWork 里新建的
-`统一代理`（baseUrl 指向采集入口）。判定 Pass，`model_calls.status = observed`。
+### YonWork 一轮（批次 `collector-e2e`）
+
+`smoke` 的 Case02 跑 1 轮，模型选 YonWork 里新建的 `统一代理`
+（baseUrl 指向采集入口）。判定 Pass，`model_calls.status = observed`。
 
 **完整关联链一次打通，全程没有用到时间窗：**
 
@@ -221,6 +223,48 @@ BenchmarkId  bench-Case02-r1-1a0c7afba3a
 首个有效输出 1.159s、请求时长 1.837s、118 次有内容的流式分片、
 `upstream_attempts` 保持 None。账本两行（`open` / `closed`），重放合并成 1 条，
 文件里搜不到提示词和两种令牌。
+
+### WorkBuddy 一轮（批次 `collector-e2e-wb3`）
+
+`smoke` 的 Case02 跑 1 轮，模型 `deepseek-flash`（配置已指向采集入口），判定 Pass。
+
+```text
+BenchmarkId  bench-Case02-r1-1a0c7bbf682
+  → X-Conversation-ID 严格等值          → 代理记 1 条 attributed 请求
+  → x-oneapi-request-id 2026…6JN7pREiW  → NewAPI 后台 request_id 命中，3688/36 一致
+```
+
+首个有效输出 1.018s、请求时长 1.200s、35 次分片；整轮 wall 5.795s、CLI 自报内部 2.133s。
+⚠️ 同样 n=1，**不是性能结论**；和 YonWork 那轮也不可比（不同 Case 上下文、不同产品）。
+
+**WorkBuddy 拿 `models.json` 的 `id` 当发给网关的模型名。**（实测，两次）
+所以不能像 YonWork 那样「新建一条指向代理的同模型条目」来做直连/代理对照——
+新条目叫 `deepseek-flash-proxy`，网关就收到这个名字并回 503
+`No available channel`。试过把 `name` 改回 `deepseek-flash` 保留新 `id`，**无效**，
+证明 CLI 发的是 `id`。最终做法是把**现有那条**的 url / apiKey 指向代理，
+原文件备份在 `models.json.bak-collector`，回退就是拷回来。
+
+### 这次失败挖出来的：后台日志看不见被网关拒掉的请求
+
+上面那两次 503 各自触发了 **9 次客户端重试**，而 WorkBuddy CLI 自己
+**stdout 空白、退出码 0**，什么都没说。18 次失败请求里：
+
+| 来源 | 看到几次 |
+|---|---:|
+| 逐请求账本 | 18（`upstream-error`，HTTP 503） |
+| CLI 输出 | 0 |
+| NewAPI `/api/log/self` | **0**（消费和错误记录都没有） |
+
+⚠️ **这条要当心，它影响已有的结论**：`runner/newapi.py` 采 ErrorCalls 用的就是
+`/api/log/self`。被网关在选通道之前直接拒掉的请求**不进这个来源**，
+所以「后台错误日志为 0」**不能**推断「这一轮没有失败的请求」。
+七-3.1 那套逐轮 ErrorCalls 判定在这类失败上是盲的。
+（范围限定：实测的是 503 `No available channel`，且只查了 `/api/log/self`
+这一个我们实际在用的来源；别的拒绝类型和管理员视角的日志没试。）
+
+反过来说，这一轮也顺带把验收矩阵里「请求失败后重试」那格跑了个非受控版本：
+9 次客户端请求逐条在账本里，`upstream_attempts` 全程保持 None——
+客户端重试和网关内部尝试没有被混成一个数。
 
 ### 顺带撞出来的一个线索：两个来源的 input token 不是一回事
 
@@ -242,15 +286,20 @@ prompt_tokens。如果成立，CLAUDE.md 三里那个「同一轮换个来源差
 并且确认会话 JSONL 那个字段的语义。在确认之前，**按来源独立汇总的规矩不变**，
 不要因为这个假设去做任何换算。
 
+**而且这是 YonWork 会话 JSONL 独有的**：WorkBuddy 那轮 `workbuddy-cli`
+报 3,688，和代理、NewAPI 完全一致（其中缓存命中 3,456、未命中 232）。
+所以不是「所有端上来源都只记未命中」，**别推广**。
+
 ⚠️ 这一轮的耗时数字（代理 1.837s vs 整轮 wall 3.617s）**不是性能结论**：
 n=1、单 Case、单模型。两者之差也不能直接叫「产品开销」，那还包含我们这一跳。
 
 ## 明确还没做的
 
-- **WorkBuddy 没经过这个入口跑过批**：入口能力证过了，跑批接线没实测。
 - 入库与报告：`model_calls` 目前只在 `results.jsonl` 里，没进 MySQL、
   Web 也看不到逐请求时间线（待办第 4 项）。
-- 工具续答、重试、子代理、取消这些场景还没跑过；本轮只是单次文本问答。
+- 工具续答、子代理、取消这些场景没跑过；两轮都是单次文本问答。
+  重试只有上面那次**非受控**的意外样本，不算受控验收。
+- 两轮各 n=1，任何耗时数字都不构成性能结论。
 - 诊断原文的显式开关、脱敏和保存期限：没实现，目前只能记元数据。
 - 连接复用、并发压测：本项保留串行锁，没有测过并发下的行为。
 - 真实的工具续答、重试、子代理、取消场景：待办第 1 项的路由与收尾验证仍未完成，

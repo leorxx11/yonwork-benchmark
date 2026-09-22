@@ -579,6 +579,14 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
    默认模型和 WorkBuddy 不在这一路的覆盖范围。入库按来源保留计数，事后对账不覆盖
    已用于判定的逐轮证据。细节与验证见 `docs/error-calls-collection.md`。
 
+   ⚠️ **新增盲区（2026-09-22 实测）：被网关在选通道之前拒掉的请求，
+   `/api/log/self` 里一条都没有**——消费和错误记录都没有。
+   实测一轮里 18 次 HTTP 503 `No available channel`，逐请求账本全记下了，
+   CLI 自己 stdout 空白退出码 0，而后台日志是 0 条。
+   所以**「后台错误日志为 0」不能推断「这一轮没有失败的请求」**。
+   范围：只实测了 503 这一种拒绝、只查了我们实际在用的 `/api/log/self`。
+   见 `docs/model-request-ledger.md`。
+
 3.2 ~~抽 `Driver` 接口~~ **已完成 2026-09-21。** 跨模式一键编排也已完成，见 3.3。
    接口在 `runner/drivers/`，`batch.py` 现在对被测产品一无所知——
    隔离、逐轮落盘、判定、计数这四件事共用，产品相关的全在驱动后面。
@@ -773,9 +781,14 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
 复现、临时账户同步问题和清理证据见 [入口验证](docs/model-entry-validation.md)。
 
 **账本与采集代理已实现并接进跑批**（`runner/modelproxy/` + `batch.run_batch`，
-36 项离线单测）。**默认关闭。YonWork 单次文本问答已真实跑通一轮**
-（2026-09-22，`BenchmarkId → x-yonwork-run-id → x-oneapi-request-id → NewAPI 后台`
-全程精确关联，没用时间窗）。WorkBuddy 跑批接线、入库和 Web 报告还没做。
+36 项离线单测）。**默认关闭。两个产品的单次文本问答都已真实跑通一轮**
+（2026-09-22，`BenchmarkId → 产品原生 run 头 → x-oneapi-request-id → NewAPI 后台`
+全程精确关联，没用时间窗）。入库和 Web 报告还没做；工具续答/子代理/取消没跑。
+
+⚠️ **WorkBuddy 拿 `models.json` 的 `id` 当发给网关的模型名**（实测两次，改 `name` 无效）。
+所以它**不能**像 YonWork 那样新建一条同模型条目做直连/代理对照——
+新 id 会被网关当成未知模型回 503。只能改现有那条的 url/apiKey，
+备份在 `models.json.bak-collector`。
 设计、归属策略和测量边界见 [逐请求账本](docs/model-request-ledger.md)。三件要内化的：
 
 - **关联只认原生头全等**，命中不了就记 `unattributed`，**绝不按时间窗猜**。

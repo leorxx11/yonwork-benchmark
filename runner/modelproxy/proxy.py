@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -124,7 +125,7 @@ class CollectorProxy:
         if self._server is not None:
             raise ProxyError("采集代理已经在运行")
         try:
-            server = ThreadingHTTPServer((self._bind, self._port), _Handler)
+            server = _Server((self._bind, self._port), _Handler)
         except OSError as exc:
             # 裸 OSError 只说 "Address already in use"，看不出是谁占着。
             # 端口是固定的，所以占用者基本只有两种：没退干净的上一个 Worker，
@@ -346,6 +347,20 @@ def _has_output(payload: object) -> bool:
         if part.get("content") or part.get("reasoning_content") or part.get("tool_calls"):
             return True
     return False
+
+
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address) -> None:
+        """客户端半路断开是**正常现象**，不该打一整屏 traceback。
+
+        实测 WorkBuddy 重试时会重置 keep-alive 连接，默认行为会把它打成看起来
+        像代理崩了的堆栈，把跑批日志里真正的错误淹掉。断开本身已经记在账本的
+        `client-disconnected` 里，这里只放过连接类异常，别的照常抛。
+        """
+        if not isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            super().handle_error(request, client_address)
 
 
 class _Handler(BaseHTTPRequestHandler):
