@@ -3,6 +3,10 @@
 日期：2026-09-22。范围：监控待办第 2 项的代码实现。
 上游依据见 [入口与任务关联验证](model-entry-validation.md)。
 
+**YonWork 1.0.10 兼容性：请求仍被采集，但旧轮次头已在实测路径中消失，可能记为未归属。**
+现有 HTTP 账本未存 traceparent 值；hook 映射方案仅完成探针，尚未接入正式归属，见
+[1.0.10 探针与适配方案](yonwork-1.0.10-correlation-probe.md)。下文旧版精确关联结论不自动适用于新版。
+
 ## 状态
 
 `runner/modelproxy/` 已实现，并已接进 `batch.run_batch` / CLI / Worker，

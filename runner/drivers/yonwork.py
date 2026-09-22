@@ -6,7 +6,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
-from ..catalog import CatalogError, list_model_choices, resolve_model_choice
+from ..catalog import (
+    CatalogError,
+    default_choice,
+    list_model_choices,
+    resolve_model_choice,
+)
 from ..client import ChatClient, session_key_for
 from ..discovery import (
     DiscoveryError,
@@ -70,17 +75,27 @@ class YonWorkDriver:
             # 未登录时整批都会是 Fail，那批数据毫无意义，不如一开始就不跑。
             raise DriverError("YonWork 尚未登录（hasSession=false）")
 
-        model_choice = None
-        if self.model_query:
-            try:
-                model_choice = resolve_model_choice(
-                    list_model_choices(endpoint), self.model_query
-                )
-            except (CatalogError, TransportError) as exc:
-                raise DriverError(f"模型解析失败：{exc}") from exc
-            yield f"指定模型：{model_choice.label}"
-        else:
-            yield "未指定模型，用智能体当前的默认模型"
+        # ⚠️ **不指定模型时也必须显式发 modelSelection**，不能靠省略。
+        # YonWork 1.0.10 实测：空 selection 会让模型应用函数返回
+        # `runtimeApplied: false`，请求里也不带解析结果，于是引擎**沿用它上一次的配置**。
+        # 表现就是「默认模型」那一列实际跑的是上一次用过的 provider——
+        # 2026-09-22 整整一列 12 轮白跑，而且判定全 Pass，从结果上完全看不出来。
+        # 所以这里把「默认」解析成官方标记的那个 choice，显式发出去。
+        try:
+            choices = list_model_choices(endpoint)
+            if self.model_query:
+                model_choice = resolve_model_choice(choices, self.model_query)
+                yield f"指定模型：{model_choice.label}"
+            else:
+                model_choice = default_choice(choices)
+                if model_choice is None:
+                    raise DriverError(
+                        "没有任何模型被标记为默认，无法确定「默认模型」是哪一个；"
+                        "用 --model 显式指定"
+                    )
+                yield f"默认模型（显式发送，不靠省略）：{model_choice.label}"
+        except (CatalogError, TransportError) as exc:
+            raise DriverError(f"模型解析失败：{exc}") from exc
 
         self.endpoint = endpoint
         # 本项目通过名为 newapi 的模型配置访问网关；指定其它模型不代表经过它。

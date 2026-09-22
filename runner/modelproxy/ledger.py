@@ -59,6 +59,11 @@ class ModelRequestRecord:
     stream: bool | None = None
     message_count: int | None = None
     header_names: tuple[str, ...] = ()
+    # W3C 跟踪头的**值**。1.0.10 起 YonWork 不再发原生轮次头，只剩这个；
+    # 将来靠产品 hook 提交 (traceId, spanId) → runId 的映射来补关联，
+    # 而补关联的前提是**请求发生时就把它存下来**——事后补不回来。
+    # 存值不违反「请求头只留名字」那条：关联头的值本来就是例外。
+    traceparent: str | None = None
     http_status: int | None = None
     termination: str | None = None
     # 首个**有效**输出：带内容或工具参数的那一片。

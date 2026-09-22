@@ -154,6 +154,10 @@ class ChatTurn:
     tool_calls_detail: str = ""
     requested_model: str | None = None  # 请求里指定的 modelId，None = 用智能体默认
     requested_model_label: str | None = None  # 该模型的显示名，四模式视图按它分组
+    # 请求里指定的 providerAccountId。**光比模型名不够**：
+    # 同一个模型名可以由多个 provider 提供（官方默认和我们的代理都叫 deepseek-flash），
+    # 只比名字的话「跑错通路」看不出来——2026-09-22 就是这么白跑了一列。
+    requested_provider: str | None = None
     # 这一轮**允许**用工具吗。None = 该产品没有这个开关（YonWork 就是，
     # 工具由智能体配置决定，我们这边关不掉）。
     # 用来区分「模型自己选择不调工具」（产品的问题 → Fail）和

@@ -207,6 +207,9 @@ class ChatClient:
         state = _TurnState(benchmark_id=benchmark_id, session_key=key, prompt=prompt)
         state.started_at = started_at
         state.requested_model = self.model_choice.model_id if self.model_choice else None
+        state.requested_provider = (
+            self.model_choice.provider_account_id if self.model_choice else None
+        )
         state.requested_model_label = (
             (self.model_choice.display_name or self.model_choice.model_id)
             if self.model_choice
@@ -355,6 +358,7 @@ class _TurnState:
     http_status: int | None = None
     requested_model: str | None = None
     requested_model_label: str | None = None
+    requested_provider: str | None = None
     counts: Counter[str] = field(default_factory=Counter)
     tool_calls: list[str] = field(default_factory=list)
 
@@ -377,6 +381,7 @@ class _TurnState:
             tool_calls=tuple(self.tool_calls),
             requested_model=self.requested_model,
             requested_model_label=self.requested_model_label,
+            requested_provider=self.requested_provider,
             stream_error=self.stream_error,
             http_status=self.http_status,
             transcript_path=str(path) if path else None,

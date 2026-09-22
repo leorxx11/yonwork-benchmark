@@ -59,6 +59,8 @@ def check_cost(
     else:
         checks.append(Check(Layer.COST, "model-match", Verdict.PASS, requested))
 
+    checks.extend(_provider_match(turn, usage))
+
     if usage.match not in EXACT_MATCHES:
         # 时间窗匹配在并发跑批时可能张冠李戴，留痕提醒。
         # 会话 JSONL 走 idempotencyKey，是精确的，不用提醒。
@@ -115,3 +117,37 @@ def check_cost(
         )
 
     return checks
+
+
+# 产品的会话日志把自定义 provider id 截短成 `custom-<8 位>`（15 字符），
+# 完整 id 是 43 字符。所以只能按前缀比，但**必须卡住长度**——
+# 光一个 `custom-` 前缀会匹配上所有自定义 provider，等于没查。
+_MIN_PROVIDER_PREFIX = 12
+
+
+def _provider_match(turn: ChatTurn | None, usage: UsageSample) -> list[Check]:
+    """实际跑在哪个 provider 上。
+
+    **为什么光有 model-match 不够**：同一个模型名可以由多个 provider 提供。
+    2026-09-22 实测，官方默认和我们的采集代理都叫 `deepseek-flash`，
+    所以「默认模型」那一列实际跑在代理上、model-match 全绿，整列 12 轮白跑。
+
+    判 Invalid 而不是 Fail：跑错通路的数字**没有意义**，不是产品的失败（二-4）。
+    """
+    requested = turn.requested_provider if turn else None
+    if requested is None:
+        return []  # 没指定 provider（旧数据或别的产品），没什么可比的
+    actual = usage.provider
+    if not actual:
+        return [Check.skipped(Layer.COST, "provider-match", "用量里没有 provider")]
+    if actual == requested:
+        return [Check(Layer.COST, "provider-match", Verdict.PASS, requested)]
+    if len(actual) >= _MIN_PROVIDER_PREFIX and requested.startswith(actual):
+        return [
+            Check(Layer.COST, "provider-match", Verdict.PASS,
+                  f"{actual}…（产品记的是截短 id，与 {requested} 前缀一致）")
+        ]
+    return [
+        Check(Layer.COST, "provider-match", Verdict.INVALID,
+              f"请求的是 provider {requested}，实际跑在 {actual}")
+    ]

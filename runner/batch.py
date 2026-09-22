@@ -194,11 +194,19 @@ def _collect_model_calls(
     payload = tuple(record.to_json() for record in records)
     ledger_path = str(collector.ledger_path)
     if not any(record.attribution in (ATTRIBUTED, LATE) for record in records):
+        # ⚠️ **两种原因都要说**，别只报一种。
+        # 原来这里断言「baseUrl 没指过来」，但 YonWork 1.0.10 换用 OpenAI SDK 之后
+        # 请求照样到入口、只是不再带 `x-yonwork-run-id`——那种情况下 baseUrl 是对的，
+        # 照着这句话去查会一路查错方向（2026-09-22 实际发生过）。
         return ModelCallCollection(
             status=MODEL_CALLS_UNAVAILABLE,
             detail=(
-                "逐请求采集已启用，但本轮没有任何请求经过采集入口："
-                "检查被测产品的 baseUrl 是否指向 BENCH_COLLECTOR_PORT"
+                "逐请求采集已启用，但本轮一个请求都没归属上。三种可能："
+                "①这个模式本来就不经过采集入口（如产品官方默认通路）——账本里应当 0 条请求；"
+                "②产品的 baseUrl 没指向 BENCH_COLLECTOR_PORT——同样 0 条；"
+                "③产品这个版本不再发送可关联的轮次标识"
+                "（YonWork 1.0.10 起就不发 x-yonwork-run-id）——账本里有 unattributed 请求。"
+                "看批次账本里有没有请求即可区分 ①② 和 ③"
             ),
             requests=payload,
             ledger_path=ledger_path,

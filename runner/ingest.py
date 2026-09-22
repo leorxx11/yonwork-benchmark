@@ -189,9 +189,9 @@ INSERT INTO model_requests (request_id, batch_id, benchmark_id, proxy_id, sequen
     attribution, attribution_source, product, protocol, requested_model, response_model,
     is_stream, http_status, termination, first_output_ms, duration_ms, input_tokens,
     output_tokens, total_tokens, cache_read_tokens, usage_status, output_events,
-    upstream_request_id, upstream_attempts, error_kind, received_at, ended_at, raw)
+    traceparent, upstream_request_id, upstream_attempts, error_kind, received_at, ended_at, raw)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-    %s, %s, %s, %s, %s, %s, %s, %s)
+    %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON DUPLICATE KEY UPDATE
     benchmark_id=VALUES(benchmark_id), attribution=VALUES(attribution),
     attribution_source=VALUES(attribution_source), response_model=VALUES(response_model),
@@ -200,6 +200,7 @@ ON DUPLICATE KEY UPDATE
     input_tokens=VALUES(input_tokens), output_tokens=VALUES(output_tokens),
     total_tokens=VALUES(total_tokens), cache_read_tokens=VALUES(cache_read_tokens),
     usage_status=VALUES(usage_status), output_events=VALUES(output_events),
+    traceparent=VALUES(traceparent),
     upstream_request_id=VALUES(upstream_request_id), error_kind=VALUES(error_kind),
     ended_at=VALUES(ended_at), raw=VALUES(raw)
 """
@@ -232,6 +233,7 @@ def _model_request_row(
         usage.get("prompt_cache_hit_tokens") or (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
         request.get("usage_status") or "missing",
         request.get("output_events"),
+        request.get("traceparent"),
         request.get("upstream_request_id"),
         # 恒为 None：一次客户端请求不等于一次上游尝试（`ModelRequestRecord` 的规矩）。
         request.get("upstream_attempts"),
@@ -395,6 +397,7 @@ CREATE TABLE IF NOT EXISTS model_requests (
     cache_read_tokens  INT NULL,
     usage_status       VARCHAR(16)  NOT NULL DEFAULT 'missing',
     output_events      INT NULL,
+    traceparent        VARCHAR(128) NULL,
     upstream_request_id VARCHAR(128) NULL,
     upstream_attempts  INT NULL,
     error_kind         VARCHAR(64)  NOT NULL DEFAULT '',
@@ -405,6 +408,7 @@ CREATE TABLE IF NOT EXISTS model_requests (
     KEY idx_mreq_batch (batch_id, sequence),
     KEY idx_mreq_attribution (attribution),
     KEY idx_mreq_upstream (upstream_request_id),
+    KEY idx_mreq_trace (traceparent),
     CONSTRAINT fk_mreq_batch FOREIGN KEY (batch_id)
         REFERENCES batches (batch_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -433,6 +437,17 @@ def _ensure_model_calls(connection: Any) -> None:
                 " NOT NULL DEFAULT 'disabled' AFTER engine_ms"
             )
         cursor.execute(_MODEL_REQUESTS_DDL)
+        # 已有 model_requests 表的库要单独补这一列。
+        cursor.execute(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS"
+            " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'model_requests'"
+            " AND COLUMN_NAME = 'traceparent'"
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                "ALTER TABLE model_requests ADD COLUMN traceparent VARCHAR(128) NULL"
+                " AFTER output_events"
+            )
     _MODEL_CALLS_READY = True
 
 

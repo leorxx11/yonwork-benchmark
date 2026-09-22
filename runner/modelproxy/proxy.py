@@ -254,6 +254,7 @@ class CollectorProxy:
             received_at=now_iso(),
             path=path,
             header_names=tuple(sorted({name.lower() for name in headers})),
+            traceparent=headers.get("traceparent"),
         )
         try:
             payload = json.loads(body or b"{}")

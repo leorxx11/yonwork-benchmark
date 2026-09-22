@@ -781,6 +781,11 @@ MutationObserver 看不到点击。T2=0.1ms 已说明这段没有可感知延迟
 `request_id`，不必逐轮改账户或依赖时间窗。辅助模型/子代理仍待动态验证。
 复现、临时账户同步问题和清理证据见 [入口验证](docs/model-entry-validation.md)。
 
+**1.0.10 版本边界：旧轮次头在新版实测路径中消失，账本仍采集但无法精确归属。**
+两轮隔离探针证明 Host API 注入 traceparent 也不透传；新版模型 hook 同时提供 runId/trace，
+组件级精确匹配已验证，正式扩展与归属适配尚未实施。见
+[新版兼容性探针](docs/yonwork-1.0.10-correlation-probe.md)。
+
 **账本与采集代理已实现并接进跑批**（`runner/modelproxy/` + `batch.run_batch`，
 46 项离线单测）。**默认关闭。两个产品的单次文本问答都已真实跑通一轮**
 （2026-09-22，`BenchmarkId → 产品原生 run 头 → x-oneapi-request-id → NewAPI 后台`

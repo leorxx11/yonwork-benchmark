@@ -299,3 +299,48 @@ class AggregationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProviderMatchTests(unittest.TestCase):
+    """跑错通路必须判 Invalid。光比模型名抓不住——同名模型可以来自不同 provider。"""
+
+    @staticmethod
+    def _turn(provider):
+        return ChatTurn(benchmark_id="b", session_key="s", prompt="p",
+                        started_at=now_iso(), ended_at=now_iso(), duration_seconds=1.0,
+                        answer="ok", terminated_by="chat.complete", stop_reason="stop",
+                        requested_model="deepseek-flash", requested_provider=provider)
+
+    def _check(self, requested, actual):
+        usage = UsageSample(source="session-jsonl", model="deepseek-flash",
+                            provider=actual, input_tokens=1, output_tokens=1,
+                            total_tokens=2, match="idempotency-key")
+        result = evaluate(turn=self._turn(requested), expectations=Expectations(),
+                          usage=usage, log_stats=None, failure=None)
+        return next((c for c in result.checks if c.name == "provider-match"), None)
+
+    def test_same_model_wrong_provider_is_invalid(self):
+        """这正是 2026-09-22 那一列白跑的形状：模型名一样，provider 不同。"""
+        check = self._check("yonyou-default-auto", "custom-3859c0c4")
+        self.assertEqual(Verdict.INVALID, check.verdict)
+        self.assertIn("custom-3859c0c4", check.detail)
+
+    def test_truncated_id_with_matching_prefix_passes(self):
+        check = self._check("custom-3859c0c4-a539-4aeb-ae0d-105fbccba99f", "custom-3859c0c4")
+        self.assertEqual(Verdict.PASS, check.verdict)
+
+    def test_short_prefix_is_not_accepted(self):
+        """`custom-` 会匹配上所有自定义 provider，等于没查。"""
+        check = self._check("custom-3859c0c4-a539-4aeb-ae0d-105fbccba99f", "custom-")
+        self.assertEqual(Verdict.INVALID, check.verdict)
+
+    def test_missing_provider_is_skipped_not_failed(self):
+        check = self._check("yonyou-default-auto", None)
+        self.assertIsNone(check.verdict)
+
+    def test_no_requested_provider_skips_the_check(self):
+        usage = UsageSample(source="session-jsonl", model="deepseek-flash",
+                            provider="custom-3859c0c4", match="idempotency-key")
+        result = evaluate(turn=self._turn(None), expectations=Expectations(),
+                          usage=usage, log_stats=None, failure=None)
+        self.assertIsNone(next((c for c in result.checks if c.name == "provider-match"), None))

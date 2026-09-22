@@ -157,8 +157,9 @@ class CollectorProxyTests(unittest.TestCase):
 
     def send(self, *, model: str = "stream", run_id: str | None = None,
              header: str = "x-yonwork-run-id", token: str | None = None,
-             path: str = "/chat/completions", stream: bool = True):
-        extra = {header: run_id} if run_id else {}
+             path: str = "/chat/completions", stream: bool = True,
+             extra: dict[str, str] | None = None):
+        extra = {**({header: run_id} if run_id else {}), **(extra or {})}
         url = self.proxy.base_url + path
         return _post(url, {"model": model, "stream": stream,
                            "messages": [{"role": "user", "content": PROMPT}]},
@@ -197,6 +198,22 @@ class CollectorProxyTests(unittest.TestCase):
         self.assertIsNotNone(record.first_output_seconds)
         self.assertLessEqual(record.first_output_seconds, record.duration_seconds)
         self.assertEqual(self.proxy.records_for("bench-1"), (record,))
+
+    def test_traceparent_value_is_stored(self) -> None:
+        """YonWork 1.0.10 起只剩这个头。**必须在请求发生时就存值**——
+        将来靠产品 hook 提交 (traceId, spanId) → runId 补关联，事后补不回来。"""
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        trace = "00-1630b2f560198ebd2370d03e0e688cf4-eeca49719ddacce2-01"
+        self.send(run_id="bench-1", extra={"traceparent": trace})
+        record, = self.settled(1)
+        self.assertEqual(record.traceparent, trace)
+        self.assertIn(trace, self.ledger_path.read_text(encoding="utf-8"))
+
+    def test_missing_traceparent_stays_none_not_empty(self) -> None:
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.send(run_id="bench-1")
+        record, = self.settled(1)
+        self.assertIsNone(record.traceparent)
 
     def test_workbuddy_header_also_correlates(self) -> None:
         self.proxy.register(run_id="bench-wb", product="workbuddy")
@@ -636,8 +653,11 @@ class BatchWiringTests(unittest.TestCase):
         """采集开着却一个请求都没经过 = baseUrl 没指过来，不是产品没调模型。"""
         record, = self._run(_ProxyDriver(self.proxy, routed=False), collector=self.proxy)
         self.assertEqual(record.model_calls.status, "unavailable")
+        # 两种原因都要说出来：只报 baseUrl 会把人引向错误方向（YonWork 1.0.10）。
         self.assertIn("baseUrl", record.model_calls.detail)
-        self.assertIn("没有任何请求经过采集入口", record.note)
+        self.assertIn("轮次标识", record.model_calls.detail)
+        self.assertIn("本来就不经过采集入口", record.model_calls.detail)
+        self.assertIn("一个请求都没归属上", record.note)
 
     def test_each_turn_gets_its_own_requests(self) -> None:
         records = self._run(_ProxyDriver(self.proxy), count=3, collector=self.proxy)

@@ -156,6 +156,9 @@ CREATE TABLE IF NOT EXISTS model_requests (
     -- observed / missing。**缺就是缺，不补零。**
     usage_status       VARCHAR(16)  NOT NULL DEFAULT 'missing',
     output_events      INT NULL,
+    -- W3C 跟踪头的值。YonWork 1.0.10 起是唯一可能的关联线索，
+    -- 补关联的前提是请求发生时就存下来。见 docs/yonwork-1.0.10-correlation-probe.md。
+    traceparent        VARCHAR(128) NULL,
     upstream_request_id VARCHAR(128) NULL,
     -- **恒为 NULL**：一次客户端请求不等于一次上游尝试，网关内部重试看不见。
     -- 填 1 就是拿观测不到的东西冒充证据。
@@ -168,6 +171,7 @@ CREATE TABLE IF NOT EXISTS model_requests (
     KEY idx_mreq_batch (batch_id, sequence),
     KEY idx_mreq_attribution (attribution),
     KEY idx_mreq_upstream (upstream_request_id),
+    KEY idx_mreq_trace (traceparent),
     CONSTRAINT fk_mreq_batch FOREIGN KEY (batch_id)
         REFERENCES batches (batch_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
