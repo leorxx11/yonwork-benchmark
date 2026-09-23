@@ -255,10 +255,15 @@ def _model_request_rows(records: list[JsonObject], batch_id: str) -> list[tuple[
        只靠来源 1 的话，未归属请求永远进不了报告，而「没有未归属请求」和
        「有但我们没记」看起来一模一样。
 
+    账本读得到时**以账本为准**：hook 绑定可能晚于这一轮的快照才到
+    （`CollectorProxy.bind_trace` 会追加一条新的 closed 行），快照里还是未归属，
+    账本里已经补上了。归属只认本批次里确有的 BenchmarkId。
+
     账本读不到就只入来源 1（换台机器重放时会这样），**不伪造**缺失的那部分。
     """
     rows: dict[str, tuple[Any, ...]] = {}
     ledgers: set[str] = set()
+    batch_runs = {str(record.get("benchmark_id")) for record in records if record.get("benchmark_id")}
     for record in records:
         calls = record.get("model_calls")
         if not isinstance(calls, dict):
@@ -279,10 +284,9 @@ def _model_request_rows(records: list[JsonObject], batch_id: str) -> list[tuple[
         except LedgerError:
             continue
         for entry in entries:
-            if entry.request_id not in rows:
-                rows[entry.request_id] = _model_request_row(
-                    entry.to_json(), batch_id, None
-                )
+            owner = entry.run_id if entry.run_id in batch_runs else None
+            if entry.request_id not in rows or owner is not None or entry.run_id is None:
+                rows[entry.request_id] = _model_request_row(entry.to_json(), batch_id, owner)
     return list(rows.values())
 
 

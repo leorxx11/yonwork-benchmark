@@ -11,6 +11,7 @@ from runner.ingest import (
     DEFAULT_MODEL_MODE,
     IngestError,
     _infer_model_mode,
+    _model_request_rows,
     _run_row,
     _usage_rows,
     find_result_files,
@@ -148,6 +149,29 @@ class RowTests(unittest.TestCase):
         rows = _usage_rows(payload)
         self.assertEqual(1, len(rows))
         self.assertEqual("device-api", rows[0][1])
+
+    def test_ledger_backfill_wins_over_the_turn_snapshot(self) -> None:
+        """hook 绑定晚于快照到达：快照里未归属，账本最后一条 closed 已补上归属。"""
+        base = {"proxy_id": "p", "received_at": "2026-09-23T10:00:00+08:00", "path": "/v1/x",
+                "record_status": "closed", "traceparent": "00-" + "a" * 32 + "-" + "b" * 16 + "-01"}
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "model-requests.jsonl"
+            lines = [
+                {**base, "request_id": "r1", "sequence": 1, "attribution": "unattributed"},
+                {**base, "request_id": "r1", "sequence": 1, "attribution": "attributed",
+                 "run_id": "bench-1", "attribution_source": "traceparent+model_call_started"},
+                {**base, "request_id": "r2", "sequence": 2, "attribution": "attributed",
+                 "run_id": "other-batch-run"},
+            ]
+            ledger.write_text("".join(json.dumps(item) + "\n" for item in lines), encoding="utf-8")
+            payload = record()
+            payload["model_calls"] = {"status": "unavailable", "ledger_path": str(ledger),
+                                      "requests": []}
+            rows = {row[0]: row for row in _model_request_rows([payload], "batch-1")}
+        self.assertEqual("bench-1", rows["r1"][2])
+        self.assertEqual("attributed", rows["r1"][5])
+        # 不属于本批次的轮次不认领
+        self.assertIsNone(rows["r2"][2])
 
     def test_suite_id_is_stable(self) -> None:
         self.assertEqual(suite_id_for("a"), suite_id_for("a"))

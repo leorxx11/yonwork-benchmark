@@ -1,0 +1,13 @@
+{
+  "name": "@benchmark/trace-bridge",
+  "version": "0.1.0",
+  "description": "OpenClaw hook plugin: model-call trace span -> run id bindings for the benchmark collector",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

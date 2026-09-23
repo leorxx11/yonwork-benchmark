@@ -49,6 +49,17 @@ CORRELATION_HEADERS: tuple[str, ...] = (
 # 透传给网关，后台日志才对得上我们这一层的归属。鉴权头不在此列，由代理重签。
 FORWARDED_HEADERS: tuple[str, ...] = (*CORRELATION_HEADERS, "traceparent")
 
+# 产品原生头之外的第二条关联路：产品 hook 提交 `(traceId, spanId) → runId`，
+# 请求自带的 traceparent 命中它就归属。YonWork 1.0.10 起只剩这条，
+# 见 `plugins/benchmark-trace-bridge/` 和 `docs/yonwork-1.0.10-correlation-probe.md`。
+# hook runId 形如 `<BenchmarkId>:compaction:<diagId>` 时，按产品源码里的
+# 固定拼法还原主轮——这是结构规则，不是模糊匹配。
+TRACE_SOURCE_PREFIX = "traceparent+"
+CONFLICT_SOURCE = "conflict"
+_COMPACTION_MARKER = ":compaction:"
+# 绑定只为「请求晚于绑定到达」而留；常驻服务不能无界增长。
+_MAX_TRACE_BINDINGS = 4096
+
 _UPSTREAM_ID_HEADERS = ("x-oneapi-request-id", "x-newapi-request-id", "x-request-id")
 
 # 非流式响应缓冲上限。只为取 usage / model，正文读完即弃，不进账本。
@@ -65,6 +76,25 @@ class _Registration:
     product: str
     closed: bool = False
     requests: list[str] = field(default_factory=list)
+    # 收尾时代理已发出的最大序号。迟到绑定补归属时用它判断**请求本身**是否迟到——
+    # 按补归属那一刻轮次开没开来判，会把「请求准时、绑定晚到」错记成 late。
+    closed_after_sequence: int | None = None
+
+
+@dataclass(slots=True)
+class _TraceBinding:
+    run_id: str | None       # 已注册的 BenchmarkId；None = 同一 span 被报成了两个轮次
+    source: str              # 提交它的 hook 名
+
+
+def parse_traceparent(value: str | None) -> tuple[str, str] | None:
+    """`00-<traceId>-<spanId>-<flags>` → `(traceId, spanId)`，小写。格式不对返回 None。"""
+    parts = (value or "").strip().lower().split("-")
+    if len(parts) != 4 or len(parts[1]) != 32 or len(parts[2]) != 16:
+        return None
+    if not all(ch in "0123456789abcdef" for ch in parts[1] + parts[2]):
+        return None
+    return parts[1], parts[2]
 
 
 class CollectorProxy:
@@ -115,6 +145,7 @@ class CollectorProxy:
         self._sequence = 0
         self._runs: dict[str, _Registration] = {}
         self._records: dict[str, ModelRequestRecord] = {}
+        self._trace_bindings: dict[tuple[str, str], _TraceBinding] = {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._bind = bind
@@ -217,8 +248,73 @@ class CollectorProxy:
         """
         with self._lock:
             registration = self._runs.get(run_id)
-            if registration is not None:
+            if registration is not None and not registration.closed:
                 registration.closed = True
+                registration.closed_after_sequence = self._sequence
+
+    def bind_trace(self, *, trace_id: str, span_id: str, run_id: str, source: str) -> str:
+        """产品 hook 提交一条 `(traceId, spanId) → runId`，返回给插件的回执。
+
+        hook 是异步、允许失败的观察接口，**不保证先于 HTTP 请求到达**，两种顺序都要接：
+        先到的存起来等请求；后到的回头补上同一 span 已记下的请求，已收尾的重写账本行
+        （`load_ledger` 按 request_id 取最后一条 closed，所以追加即覆盖）。
+        SDK 重试会让多个请求共用一个 span，它们都归到同一轮，请求数照实计。
+
+        只接受已注册轮次：外部来的任意 runId 不能自称是一轮 benchmark。
+        """
+        key = parse_traceparent(f"00-{trace_id}-{span_id}-01")
+        if key is None:
+            raise ProxyError("traceId / spanId 格式不对")
+        rewrite: list[ModelRequestRecord] = []
+        with self._lock:
+            resolved = self._resolve_hook_run(run_id)
+            if resolved is None:
+                return "unregistered"
+            binding = self._trace_bindings.get(key)
+            if binding is None:
+                if len(self._trace_bindings) >= _MAX_TRACE_BINDINGS:
+                    self._trace_bindings.pop(next(iter(self._trace_bindings)))
+                binding = self._trace_bindings[key] = _TraceBinding(resolved, source)
+            elif binding.run_id != resolved:
+                binding.run_id = None
+            for record in self._records.values():
+                if record.attribution != REJECTED and parse_traceparent(record.traceparent) == key:
+                    if self._apply_binding(record, binding) and record.record_status == "closed":
+                        rewrite.append(record)
+            status = "bound" if binding.run_id else "conflict"
+        for record in rewrite:
+            self._ledger.write(record)
+        return status
+
+    def _resolve_hook_run(self, run_id: str) -> str | None:
+        """调用方持锁。"""
+        if run_id in self._runs:
+            return run_id
+        head, marker, _ = run_id.partition(_COMPACTION_MARKER)
+        return head if marker and head in self._runs else None
+
+    def _apply_binding(self, record: ModelRequestRecord, binding: _TraceBinding) -> bool:
+        """调用方持锁。返回记录是否变了。"""
+        if record.attribution_source == CONFLICT_SOURCE or record.run_id == binding.run_id:
+            return False
+        if record.run_id is not None or binding.run_id is None:
+            # 原生头说是 A、hook 说是 B，或者同一 span 被报成两轮：都不替它挑。
+            previous = self._runs.get(record.run_id or "")
+            if previous is not None and record.request_id in previous.requests:
+                previous.requests.remove(record.request_id)
+            record.run_id = record.product = None
+            record.attribution = UNATTRIBUTED
+            record.attribution_source = CONFLICT_SOURCE
+            return True
+        registration = self._runs[binding.run_id]
+        late = (registration.closed_after_sequence is not None
+                and record.sequence > registration.closed_after_sequence)
+        record.run_id = registration.run_id
+        record.product = registration.product
+        record.attribution = LATE if late else ATTRIBUTED
+        record.attribution_source = TRACE_SOURCE_PREFIX + binding.source
+        registration.requests.append(record.request_id)
+        return True
 
     def records_for(self, run_id: str) -> tuple[ModelRequestRecord, ...]:
         with self._lock:
@@ -269,6 +365,15 @@ class CollectorProxy:
 
         run_id, source = self._correlate(headers)
         with self._lock:
+            trace_key = parse_traceparent(record.traceparent)
+            binding = self._trace_bindings.get(trace_key) if trace_key else None
+            if binding is not None:
+                if binding.run_id is None or (run_id and run_id != binding.run_id):
+                    # 两个来源说法不一：留作冲突，不按优先级默默挑一个。
+                    run_id, source = None, CONFLICT_SOURCE
+                elif run_id is None:
+                    run_id, source = binding.run_id, TRACE_SOURCE_PREFIX + binding.source
+            record.attribution_source = source if source == CONFLICT_SOURCE else ""
             registration = self._runs.get(run_id or "")
             if registration is not None:
                 record.run_id = registration.run_id
@@ -470,6 +575,23 @@ class _Handler(BaseHTTPRequestHandler):
         if action == "close":
             proxy.close_run(str(payload.get("run_id") or ""))
             return 200, {"ok": True}
+        if action == "trace-bindings":
+            items = payload.get("bindings") if isinstance(payload, dict) else None
+            if not isinstance(items, list):
+                return 400, {"error": "bindings must be a list"}
+            results = []
+            for item in items:
+                item = item if isinstance(item, dict) else {}
+                try:
+                    results.append(proxy.bind_trace(
+                        trace_id=str(item.get("trace_id") or ""),
+                        span_id=str(item.get("span_id") or ""),
+                        run_id=str(item.get("run_id") or ""),
+                        source=str(item.get("hook") or "hook")[:32],
+                    ))
+                except ProxyError:
+                    results.append("invalid")
+            return 200, {"results": results}
         return 404, {"error": "unknown control action"}
 
     def _control_path(self) -> list[str] | None:
@@ -494,6 +616,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status, body = self._control("register", payload)
             elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "close":
                 status, body = self._control("close", {"run_id": parts[1]})
+            elif parts == ["trace-bindings"]:
+                status, body = self._control("trace-bindings", payload)
             else:
                 status, body = 404, {"error": "unknown control route"}
             self._json(status, body)

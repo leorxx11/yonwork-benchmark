@@ -1,0 +1,35 @@
+{
+  "id": "benchmark-trace-bridge",
+  "name": "Benchmark Trace Bridge",
+  "description": "Reports model-call trace spans to the benchmark collector for per-request attribution",
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "collectorUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:3312",
+        "description": "Benchmark collector base URL (control routes live under /_control)."
+      },
+      "collectorToken": {
+        "type": "string",
+        "default": "",
+        "description": "BENCH_COLLECTOR_CLIENT_TOKEN. Without it bindings are only logged locally."
+      },
+      "logDir": {
+        "type": "string",
+        "default": "",
+        "description": "Local evidence log directory. Defaults to <plugin dir>/logs."
+      },
+      "timeoutMs": {
+        "type": "number",
+        "default": 2000
+      }
+    }
+  },
+  "entry": "index.js"
+}

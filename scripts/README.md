@@ -6,6 +6,7 @@
 |---|---|---|
 | `install_docker_wsl.sh` | 新机器装 Docker Engine。跑一次，重复跑无害 | WSL，要 sudo |
 | `newapi_stats.ps1` | 手动拉 NewAPI 后台用量核对 | Windows PowerShell |
+| `install_trace_bridge.py` | 装/卸 `plugins/benchmark-trace-bridge` 到 YonWork 的 OpenClaw；改完重启 YonWork（别从 WSL 拉起） | WSL |
 | `extract_asar.py` | 查 YonWork 源码：解包 / 列目录 / 带上下文 grep `app.asar` | WSL，无需 Node |
 
 ## newapi_stats.ps1 不是冗余

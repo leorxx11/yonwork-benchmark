@@ -3,10 +3,11 @@
 日期：2026-09-22。状态：账本、采集代理、入库与报告都已完成并接进跑批。
 **但整轮监控不能验收**，两个原因：
 
-1. **YonWork 1.0.10 起归属率归零。** 它改走 OpenAI SDK，不再发
-   `x-yonwork-run-id`，四模式对比 v4 实测 13 个请求 **0 个归属**。
-   1.0.8 上验收过的精确关联在新版不成立。见第 5 项。
-2. 工具续答、子代理、取消三格从没跑过；受控重试也没有。
+1. ~~**YonWork 1.0.10 起归属率归零。**~~ **2026-09-23 已恢复：9/9**（靠 hook 扩展，
+   被测对象因此不再是出厂状态）。原来：改走 OpenAI SDK 后不再发 `x-yonwork-run-id`，
+   四模式对比 v4 实测 13 个请求 0 个归属。见第 5 项。
+2. 子代理、取消两格从没跑过；受控重试也没有。工具续答已跑出归属（见矩阵），
+   但「哪次请求对应哪次工具执行」的关联还没有。
 
 WorkBuddy 侧接近可验收（v4 实测 13 请求全归属、覆盖 12 轮、无串轮）。
 前置修复提交：`ecaa372`。证据见 [入口与关联验证](model-entry-validation.md)
@@ -58,7 +59,7 @@ WorkBuddy 侧接近可验收（v4 实测 13 请求全归属、覆盖 12 轮、�
 ### 2. 建立逐请求账本和采集代理
 
 实现见 `runner/modelproxy/`，设计与边界见 [逐请求账本](model-request-ledger.md)。
-46 项离线单测（全套 254 项）。已接进跑批，见第 3 项。
+60 项离线单测（全套 267 项，含 2026-09-23 hook 绑定的 12 项）。已接进跑批，见第 3 项。
 
 - [x] 定义 run / request / upstream attempt 的关联结构。每次客户端请求分配稳定 ID；
   `upstream_attempts` 恒为 None——网关内部重试没有证据，不按相邻时间猜。
@@ -85,7 +86,7 @@ WorkBuddy 侧接近可验收（v4 实测 13 请求全归属、覆盖 12 轮、�
 跑批链路已接：`batch.run_batch` 收可选的 `collector`，CLI 和 Worker 按配置起停，
 每轮在发请求前 `register`、在 `finally` 里 `close_run`，结果落 `RunRecord.model_calls`。
 **默认关闭。** 四模式对比 v4 实测 48 轮：WorkBuddy 侧 13 请求全归属、覆盖 12 轮；
-**YonWork 侧 13 请求 0 归属**（见第 5 项）。
+**YonWork 侧 13 请求 0 归属**（见第 5 项；2026-09-23 装扩展后恢复）。
 
 `model_calls.status` 三态把「没开采集」（`disabled`）、「确实采到」（`observed`）和
 「开着却一个请求都没经过」（`unavailable`）分开。最后一态几乎一定是产品的 baseUrl
@@ -138,16 +139,25 @@ WorkBuddy 侧接近可验收（v4 实测 13 请求全归属、覆盖 12 轮、�
 
 **待办**：
 
-- [ ] 先验 `model_call_started` hook 里的 `event.runId` **是否等于我们的 BenchmarkId**。
-  组件探针那 8 次调用的 runId 是脚本自己喂进去的，证明的是「runId 和 traceparent 一致」，
-  **不是**「runId 等于 BenchmarkId」。数据库里 `run-id` 断言仍全 Pass 是从 SSE 推的，
-  不是从 hook 层拿的。这一步比建扩展便宜一个数量级，**先做**。
-- [ ] 按 [1.0.10 探针](yonwork-1.0.10-correlation-probe.md) 的建议实现 hook 扩展与
-  `(traceId, spanId) → runId` 映射；映射可能晚于 HTTP 请求到达，代理**不能等 hook 再转发**。
-- [ ] 迟到绑定后 `model_calls` 落在哪要定：建议让 **ingest 重读账本时重新归属**，
-  而不是回头改 `RunRecord`——JSONL 是事实来源，重放一次就能把迟到绑定吃进去。
+- [x] 先验 `model_call_started` hook 里的 `event.runId` **是否等于我们的 BenchmarkId**。
+  **2026-09-23：主对话路径成立**（源码 + 实测推出，未装扩展）。源码里模型调用 hook
+  和 `llm_output` 取同一个 `params.runId`；产品自带 llm-observer 记的 `llm_output`
+  runId 在 v4 两个 YonWork 批次上与 BenchmarkId **24/24 逐字相等**。
+  直接观测留给扩展的第一条验收；compaction（`${runId}:compaction:…`，
+  runId 可能回落 sessionId）和子代理没覆盖。
+  见 [1.0.10 探针](yonwork-1.0.10-correlation-probe.md#hook-的-runid-是否等于-benchmarkid2026-09-23)。
+- [x] 实现 hook 扩展与 `(traceId, spanId) → runId` 映射（2026-09-23）。
+  `plugins/benchmark-trace-bridge/` + `CollectorProxy.bind_trace`，代理不等 hook，
+  两种到达顺序都接。**实机 smoke 1/1、tools 8/8 归属**，插件日志直接观测到
+  `event.runId == BenchmarkId`。⚠️ 关联键必须是 span 不是 callId——
+  callId 随 attempt 重置，一轮里会重复。见
+  [实机验证](yonwork-1.0.10-correlation-probe.md#正式实现与实机验证2026-09-23)。
+- [x] 迟到绑定：代理追加一条 closed 行；**ingest 读得到账本时以账本为准**，
+  只认本批次的 BenchmarkId。`RunRecord` 快照不回改。
 - [ ] 装扩展意味着**被测对象不再是出厂状态**：hook 每次模型调用都跑我们的代码。
-  要 A/B 量一下开销，并在报告里标出「这批数据是加载扩展跑的」。
+  **开销 A/B 没做**（要重启两次 YonWork）；报告里「本批加载了扩展」的显式标记也没做，
+  眼下只能从 `attribution_source` 以 `traceparent+` 开头看出来。
+- [ ] compaction 真实触发、子代理、取消后迟到——扩展已能接，但都没实测。
 - [ ] 这是一条**需要持续维护的适配**，不是一次性修复：扩展依赖安装包的具体导出，
   下次升级一样可能断——这次升级就是活证据。
 
@@ -157,8 +167,8 @@ WorkBuddy 侧接近可验收（v4 实测 13 请求全归属、覆盖 12 轮、�
 
 | 验收场景 | 必须证明 |
 |---|---|
-| 单次文本问答 | ✅ WorkBuddy：四模式对比 v4 实测 12 轮、13 请求全部归属、覆盖 12 轮。YonWork：1.0.8 通过，**1.0.10 归属为 0**，见第 5 项 |
-| 工具调用后续答 | 首次请求、工具执行和续答关系有证据，不重复累计 usage |
+| 单次文本问答 | ✅ WorkBuddy：四模式对比 v4 实测 12 轮、13 请求全部归属、覆盖 12 轮。YonWork：1.0.8 通过；1.0.10 原生头失效后靠 hook 扩展恢复，2026-09-23 smoke 1/1 |
+| 工具调用后续答 | 首次请求、工具执行和续答关系有证据，不重复累计 usage。⚠️ 部分：YonWork tools 2 轮 8 请求全部归属、无串轮（2026-09-23，加载扩展）；**请求 ↔ 工具执行的对应关系还没有** |
 | 请求失败后重试 | ⚠️ 只有一次**非受控**样本：503 触发 9 次客户端重试，账本逐条记下、`upstream_attempts` 保持 None，但受控用例未做。同时发现这些失败在 `/api/log/self` 里查不到 |
 | 多模型 / 子代理 | 各路线逐项验证；不支持或未覆盖明确列出，不计为通过 |
 | 超时 / 流中断 | ✅ v4 实测三条真实样本：`upstream-error` 60.3s、`transport-error` 166.5s、`stream-truncated` 167.1s（HTTP 200 后断流），usage 全记 missing 未补零。**取消仍未测** |

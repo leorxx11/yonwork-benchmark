@@ -1,6 +1,7 @@
 # YonWork 1.0.10 逐请求归属兼容性探针
 
-日期：2026-09-22。范围：验证标识传递与替代接口，尚未改正式账本归属逻辑。
+日期：2026-09-22。范围：验证标识传递与替代接口。
+**2026-09-23 更新：hook 扩展已实现并装机，实机 9/9 请求归属**，见文末「正式实现与实机验证」。
 
 ## 结论
 
@@ -81,6 +82,47 @@ sessionKey/message/idempotencyKey 等参数，没有转发这次注入的 HTTP �
 hook 是异步、有界、允许失败的观察接口，**映射不保证先于 HTTP 请求到达**。
 因此正式实现必须允许先记未归属、等映射到达后补关联，不能让代理等 hook 再转发请求。
 
+## hook 的 runId 是否等于 BenchmarkId（2026-09-23）
+
+组件探针的 runId 是脚本自己喂的，只证明 runId 与 traceparent 一致，
+不证明产品里的 runId 就是我们的 BenchmarkId。本节补这一环，**未安装任何扩展**。
+
+**结论：主对话路径上成立。** 本节是装扩展之前的推断；装上之后已直接观测证实，见下文。
+
+1. **源码：两个 hook 同源。** `selection-JInn13lc.js` 的 `runEmbeddedAttempt(params)`
+   （11424 行）里，模型调用包装函数收 `runId: params.runId`（13199 行），
+   `llm_input` / `llm_output` 也收 `runId: params.runId`（14181 / 14747 行）。
+   函数内 `params` 与 `params.runId` 都没有被重新赋值。
+   包装函数把它原样放进 `event.runId`（`baseModelCallEvent`）和 `ctx.runId`
+   （`modelCallHookContext`）；`callId` 形如 `${runId}:model:N`，自带 runId。
+2. **实测：`llm_output` 的 runId 就是 BenchmarkId。** 产品自带的 llm-observer
+   正是 `llm_input` / `llm_output` 的订阅者。四模式对比 v4 的两个 YonWork 批次
+   （`0cef44fe` 统一代理、`c4c528ef` 默认模型）共 24 轮，
+   observer 的 `runId` 与 `benchmark_id` **24/24 逐字相等（大小写保留）**，
+   `sessionKey` 24/24 一致，没有含批次标记的多余 runId。
+   `0cef44fe` 正是代理侧 13 请求 0 归属的那一批——runId 在产品内部一直在，
+   只是没出现在 HTTP 请求上。
+
+1 + 2 ⇒ 同一 attempt 内 `model_call_started.event.runId` = BenchmarkId。
+**同日已直接观测到**，见下文「正式实现与实机验证」：10 次 hook 事件的 runId 全部等于 BenchmarkId。
+
+⚠️ **上面引的是 `dist/`，但运行中的网关加载的是 `gateway-bundle.mjs`**
+（`node.exe … gateway-bundle.mjs gateway --port …`）。已在 bundle 里复核：
+包装函数 `runId:e.runId`、`nextCallId:()=>\`${e.runId}:model:…\``，
+同一函数里 `runLlmOutput({runId:e.runId,…})`，结论不变。
+以后查源码行为先查 bundle，`dist/` 只作可读参照。
+
+**边界（未覆盖）：**
+
+- **Compaction**：`compact-DLB4d8IL.js` 419 行用
+  `` `${params.runId ?? params.sessionId}:compaction:${diagId}` ``。
+  runId 若由调用方传入，可按 `:compaction:` 前缀还原主轮；
+  但各调用方（运行中溢出压缩、手动 compact）是否都传了 runId **没追**，
+  回落成 sessionId 的话需要另走 sessionId → 轮次映射。
+- **子代理**：独立 runId，父子关系要另证，本次没查。
+- llm-observer 每个 attempt 只记一对 input/output，不是每次模型调用一条，
+  **不能替代** `model_call_*` hook 做逐请求映射。
+
 ## 建议的正式实现
 
 1. 增加一个独立 OpenClaw 扩展，通过 `model_call_started` 与 `model_call_ended`
@@ -100,6 +142,52 @@ hook 是异步、有界、允许失败的观察接口，**映射不保证先于 
 
 历史账本目前只保存请求头名称，**没有保存 traceparent 值**。
 不能承诺仅凭新增适配就能补回此前所有 `unattributed` 记录。
+
+## 正式实现与实机验证（2026-09-23）
+
+按上面 1–4 实现，**已装进本机 YonWork 1.0.10**：
+
+| 部件 | 位置 | 要点 |
+|---|---|---|
+| 插件 | `plugins/benchmark-trace-bridge/`（6 项 node 单测） | 订阅 `model_call_started/ended`，handler 立即返回；白名单字段 POST 到采集代理，本地 `logs/bindings-*.jsonl` 每事件一行带回执 |
+| 安装 | `scripts/install_trace_bridge.py status/install/uninstall` | 文件放 `C:\Users\<用户>\.benchmark\benchmark-trace-bridge`；改 `openclaw.json` 三处并备份；重启 YonWork 生效 |
+| 代理 | `CollectorProxy.bind_trace` + `POST /_control/trace-bindings` | 先绑后请求、先请求后绑都接；后到的补归属并追加 closed 行；只认已注册轮次；`<id>:compaction:<n>` 还原主轮；冲突记 `conflict` |
+| 入库 | `ingest._model_request_rows` | 账本读得到时以账本为准，迟到绑定也能进库；只认本批次的 BenchmarkId |
+
+插件不需要 `allowConversationAccess`：网关只对 `llm_input/llm_output` 等 7 个 hook
+要求这个开关（bundle 里的 `LTm` 列表），`model_call_*` 不在其中。
+不 import `openclaw/plugin-sdk`：`definePluginEntry` 只是返回普通对象，
+省掉就不用在插件目录里造 node_modules 链接。
+网关启动日志确认加载：`plugins.gateway-load.plugin.benchmark-trace-bridge loadFailedCount=0 … registerFailedCount=0`。
+
+**实机结果**（`统一代理` 模式，经采集入口；证据 `results/bridge-{smoke,tools}-20260923/`，不进 Git）：
+
+| 批次 | 轮次 | 模型请求 | 归属 | hook 事件 | runId == BenchmarkId |
+|---|---:|---:|---:|---:|---|
+| smoke | 1 | 1 | 1/1 | 2，回执全 `bound` | ✅ |
+| tools | 2（各调 2 次工具，Pass） | 8 | **8/8** | 16，回执全 `bound` | ✅ |
+
+对照：四模式对比 v4 同一模式 13 请求 **0** 归属。hook 的 `(traceId, spanId)` 集合与账本
+traceparent 集合逐一相等（8 = 8），没有多余也没有缺失。
+同期 YonWork 自己起的一个会话（`session-…`）的 hook 事件回执 `unregistered`，没被归进任何轮。
+
+**实测撞出来的三件事：**
+
+- ⚠️ **callId 在一轮里不唯一。** tools 每轮 4 次请求，callId 却只有 `:model:1`、`:model:2` 各两次：
+  产品在一次断流后开了新 attempt，`nextCallId` 的计数器随 attempt 重置。
+  **关联键必须是 `(traceId, spanId)`**（4 个各不相同），按 callId 去重会少算一半请求。
+- ⚠️ **同一次调用，代理和产品说法不一。** 两轮的第 2 次请求都在 ~167s 断流
+  （代理记 `stream-truncated` / `IncompleteRead`，与 `docs/newapi-stall.md` 那条残余问题同形），
+  而 hook 的 `model_call_ended.outcome` 报 `completed`。两边照实各记各的，没有互相覆盖。
+  这让每轮拖到 ~178s，但两轮仍判 Pass——**耗时数据在修掉那条之前不能用**。
+- ⚠️ **重启后 CDP 从 9222 挪到了 9223**（`userData/DevToolsActivePort` 里写着实际端口，仍只绑 loopback）。
+  与插件无关（CDP 在 Electron 主进程，插件在网关进程），应是启动时 9222 还被占着。
+  三节说的「端口固定」不绝对，用 CDP 前先读 `DevToolsActivePort`。
+
+**仍未覆盖：** 子代理、compaction 的真实触发、取消后迟到、受控重试；
+加载插件的开销 A/B（需要两次重启 YonWork，没做）；
+报告层还没有「本批数据加载了扩展」的显式标记——眼下能看出来的只有
+`model_requests.attribution_source` 以 `traceparent+` 开头。
 
 ## 副作用、清理与复现
 

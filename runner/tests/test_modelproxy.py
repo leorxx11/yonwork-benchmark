@@ -252,6 +252,115 @@ class CollectorProxyTests(unittest.TestCase):
         self.assertEqual(late.run_id, "bench-1")
         self.assertEqual(self.proxy.records_for("bench-2"), ())
 
+    # ---- hook 绑定（YonWork 1.0.10：只剩 traceparent） -------------------
+
+    TRACE_ID = "1630b2f560198ebd2370d03e0e688cf4"
+    SPAN_ID = "eeca49719ddacce2"
+
+    def traced(self, span: str | None = None) -> dict[str, str]:
+        return {"traceparent": f"00-{self.TRACE_ID}-{span or self.SPAN_ID}-01"}
+
+    def bind(self, run_id: str, span: str | None = None, trace: str | None = None) -> str:
+        return self.proxy.bind_trace(trace_id=trace or self.TRACE_ID, span_id=span or self.SPAN_ID,
+                                     run_id=run_id, source="model_call_started")
+
+    def test_binding_before_request_attributes_it(self) -> None:
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.assertEqual(self.bind("bench-1"), "bound")
+        self.send(extra=self.traced())
+        record, = self.settled(1)
+        self.assertEqual(record.attribution, ATTRIBUTED)
+        self.assertEqual(record.run_id, "bench-1")
+        self.assertEqual(record.attribution_source, "traceparent+model_call_started")
+        self.assertEqual(self.proxy.records_for("bench-1"), (record,))
+
+    def test_binding_after_request_backfills_and_rewrites_ledger(self) -> None:
+        """hook 不保证先于请求到达：后到的绑定要回头补上，并让账本重放得到新归属。"""
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.send(extra=self.traced())
+        record, = self.settled(1)
+        self.assertEqual(record.attribution, UNATTRIBUTED)
+        self.bind("bench-1")
+        self.assertEqual(record.attribution, ATTRIBUTED)
+        self.assertEqual(self.proxy.records_for("bench-1"), (record,))
+        replayed, = load_ledger(self.ledger_path)
+        self.assertEqual(replayed.run_id, "bench-1")
+        self.assertEqual(replayed.attribution, ATTRIBUTED)
+
+    def test_late_binding_judges_lateness_by_the_request_not_the_binding(self) -> None:
+        """请求准时、绑定在收尾后才到：不是 late。收尾后才发的请求才是。"""
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.send(extra=self.traced())
+        self.proxy.close_run("bench-1")
+        self.send(extra=self.traced("aaaaaaaaaaaaaaaa"))
+        on_time, after_close = self.settled(2)
+        self.bind("bench-1")
+        self.bind("bench-1", span="aaaaaaaaaaaaaaaa")
+        self.assertEqual(on_time.attribution, ATTRIBUTED)
+        self.assertEqual(after_close.attribution, LATE)
+
+    def test_sdk_retries_sharing_a_span_all_go_to_the_run(self) -> None:
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.bind("bench-1")
+        self.send(extra=self.traced())
+        self.send(extra=self.traced())
+        self.assertEqual(len(self.proxy.records_for("bench-1")), 2)
+
+    def test_unregistered_hook_run_is_not_accepted(self) -> None:
+        """外部来的任意 runId 不能自称是一轮 benchmark。"""
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.assertEqual(self.bind("someone-else"), "unregistered")
+        self.send(extra=self.traced())
+        record, = self.settled(1)
+        self.assertEqual(record.attribution, UNATTRIBUTED)
+
+    def test_compaction_run_id_maps_to_its_turn(self) -> None:
+        """产品源码固定拼法 `<runId>:compaction:<diagId>`。"""
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.assertEqual(self.bind("bench-1:compaction:7"), "bound")
+        self.send(extra=self.traced())
+        record, = self.settled(1)
+        self.assertEqual(record.run_id, "bench-1")
+
+    def test_prefix_alone_does_not_map(self) -> None:
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.assertEqual(self.bind("bench-1:model:1"), "unregistered")
+
+    def test_header_and_binding_disagree_is_a_conflict(self) -> None:
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.proxy.register(run_id="bench-2", product="yonwork")
+        self.send(run_id="bench-1", extra=self.traced())
+        record, = self.settled(1)
+        self.assertEqual(record.run_id, "bench-1")
+        self.bind("bench-2")
+        self.assertEqual(record.attribution, UNATTRIBUTED)
+        self.assertEqual(record.attribution_source, "conflict")
+        self.assertEqual(self.proxy.records_for("bench-1"), ())
+        self.assertEqual(self.proxy.records_for("bench-2"), ())
+
+    def test_one_span_reported_for_two_runs_is_a_conflict(self) -> None:
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.proxy.register(run_id="bench-2", product="yonwork")
+        self.bind("bench-1")
+        self.assertEqual(self.bind("bench-2"), "conflict")
+        self.send(extra=self.traced())
+        record, = self.settled(1)
+        self.assertEqual(record.attribution, UNATTRIBUTED)
+        self.assertEqual(record.attribution_source, "conflict")
+
+    def test_duplicate_binding_from_started_and_ended_is_idempotent(self) -> None:
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        self.send(extra=self.traced())
+        self.settled(1)
+        self.bind("bench-1")
+        self.assertEqual(self.bind("bench-1"), "bound")
+        self.assertEqual(len(self.proxy.records_for("bench-1")), 1)
+
+    def test_malformed_trace_is_rejected(self) -> None:
+        self.proxy.register(run_id="bench-1", product="yonwork")
+        with self.assertRaises(ProxyError):
+            self.bind("bench-1", span="not-hex")
+
     # ---- 拒绝 -----------------------------------------------------------
 
     def test_wrong_credential_is_refused_and_not_forwarded(self) -> None:
@@ -520,6 +629,19 @@ class ControlApiTests(unittest.TestCase):
         status, _ = self._control("POST", "/runs",
                                   {"run_id": "r1", "product": "yonwork", "batch_id": "b7"})
         self.assertEqual(status, 409)
+
+    def test_trace_bindings_route(self) -> None:
+        self._control("POST", "/runs", {"run_id": "r1", "product": "yonwork", "batch_id": "b7"})
+        good = {"trace_id": "1630b2f560198ebd2370d03e0e688cf4", "span_id": "eeca49719ddacce2",
+                "run_id": "r1", "hook": "model_call_started"}
+        status, body = self._control("POST", "/trace-bindings", {"bindings": [
+            good, {**good, "run_id": "stranger"}, {**good, "span_id": "zz"}]})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["results"], ["bound", "unregistered", "invalid"])
+        status, _ = self._control("POST", "/trace-bindings", {"bindings": [good]}, token="wrong")
+        self.assertEqual(status, 401)
+        status, _ = self._control("POST", "/trace-bindings", {"bindings": "nope"})
+        self.assertEqual(status, 400)
 
     def test_control_traffic_never_enters_the_ledger(self) -> None:
         self._control("POST", "/runs", {"run_id": "r1", "product": "yonwork", "batch_id": "b7"})
