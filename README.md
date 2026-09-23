@@ -236,8 +236,16 @@ python3 -m venv .venv
 .venv/bin/pip install -r runner/requirements.txt
 .venv/bin/python -m unittest discover -s runner/tests -t .
 .venv/bin/python -m unittest discover -s web/tests -t .
+(cd yonwork_usage && ../.venv/bin/python -m unittest discover -s tests)
 node --test plugins/benchmark-trace-bridge/
 .venv/bin/python -m uvicorn web.api:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 测试全部离线：SSE、客户端、采集代理上游和数据库均使用替身，不要求 YonWork 或 Docker 正在运行。
+
+### GitHub Actions 自动检查
+
+[CI 工作流](.github/workflows/ci.yml) 会在推送到 `main`、提交 Pull Request 或从仓库的 **Actions → CI → Run workflow** 手动触发时，
+在 GitHub 的 Ubuntu 环境中运行 runner、Web、用量采集器的 Python 单元测试和 hook 扩展的 Node 测试。
+把工作流文件提交并推送到 GitHub 后，到 **Actions → CI** 查看每一步的结果。
+这只验证离线代码检查通过；真实 YonWork / WorkBuddy 跑批、NewAPI 转发、Docker 启动和性能数据不在这条工作流的覆盖范围内。
