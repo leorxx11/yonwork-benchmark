@@ -150,7 +150,7 @@ hook 是异步、有界、允许失败的观察接口，**映射不保证先于 
 | 部件 | 位置 | 要点 |
 |---|---|---|
 | 插件 | `plugins/benchmark-trace-bridge/`（6 项 node 单测） | 订阅 `model_call_started/ended`，handler 立即返回；白名单字段 POST 到采集代理，本地 `logs/bindings-*.jsonl` 每事件一行带回执 |
-| 安装 | `scripts/install_trace_bridge.py status/install/uninstall` | 文件放 `C:\Users\<用户>\.benchmark\benchmark-trace-bridge`；改 `openclaw.json` 三处并备份；重启 YonWork 生效 |
+| 安装 | `scripts/install_trace_bridge.py status/install/uninstall/verify` | 文件放 `C:\Users\<用户>\.benchmark\benchmark-trace-bridge`；改 `openclaw.json` 三处并备份；重启 YonWork 生效；升级后 `verify [--batch]` 重验 |
 | 代理 | `CollectorProxy.bind_trace` + `POST /_control/trace-bindings` | 先绑后请求、先请求后绑都接；后到的补归属并追加 closed 行；只认已注册轮次；`<id>:compaction:<n>` 还原主轮；冲突记 `conflict` |
 | 入库 | `ingest._model_request_rows` | 账本读得到时以账本为准，迟到绑定也能进库；只认本批次的 BenchmarkId |
 

@@ -30,6 +30,7 @@
 
 - ⚠️ **YonWork 装了我们的 hook 扩展**（`plugins/benchmark-trace-bridge/`），被测对象不是出厂状态。
   它补回了 1.0.10 丢掉的逐请求归属（实测 9/9），代价是每次模型调用都跑我们的代码，开销未量。
+  **YonWork 更新或重启后**先跑 `.venv/bin/python -m scripts.install_trace_bridge verify`。
   卸载：`.venv/bin/python -m scripts.install_trace_bridge uninstall`，再用 uTools 重启 YonWork。
 - ⚠️ **「统一代理」模式（经采集代理 → NewAPI）的耗时数据现在不能用**：工具用例每轮都有一次
   请求在 ~167s 断流后重试，把轮次拖到 ~178s。见待办 1。
@@ -179,7 +180,8 @@ YonWork 不受这个开关影响：它的工具由智能体配置决定。
 - 开关：`.env` 的 `BENCH_COLLECTOR_*`；常驻服务 `docker compose up -d collector`。
 - 被测产品里那个模型的 baseUrl 要**手动**指向 `http://127.0.0.1:3312/v1`（驱动不改产品配置）。
 - 归属靠产品原生请求头（WorkBuddy、YonWork 1.0.8）或 hook 扩展（YonWork 1.0.10 起）：
-  `scripts/install_trace_bridge.py status|install|uninstall`，改完用 uTools 重启 YonWork。
+  `scripts/install_trace_bridge.py status|install|uninstall|verify`，改完用 uTools 重启 YonWork；
+  跑完一批可用 `verify --batch results/<批次>` 核对归属是否端到端成立。
 - 离线自检（不需要任何产品）：`.venv/bin/python -m runner.modelproxy selfcheck`
 - 跑批变慢先看 [NewAPI 超时排查](docs/newapi-stall.md)。
 

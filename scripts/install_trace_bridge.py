@@ -3,6 +3,9 @@
     .venv/bin/python -m scripts.install_trace_bridge status
     .venv/bin/python -m scripts.install_trace_bridge install
     .venv/bin/python -m scripts.install_trace_bridge uninstall
+    .venv/bin/python -m scripts.install_trace_bridge verify [--batch results/<批次>]
+
+YonWork 更新或重启后跑 `verify`（见 `scripts/trace_bridge_verify.py`）。
 
 装完/卸完都要**重启 YonWork** 才生效：网关启动时才从 `openclaw.json`
 生成 `openclaw.runtime.json` 并加载插件（CLAUDE.md 坑 3：它是 uTools 拉起来的，
@@ -13,7 +16,7 @@
 
 放在哪、为什么：
 - 插件文件放 `C:\\Users\\<用户>\\.benchmark\\benchmark-trace-bridge`，**不放** YonWork 的
-  `extensions/`——那个目录是从安装包同步过来的，不归我们管。也不碰 `D:\\yonwork\\`（八节）。
+  `extensions/`——那个目录是从安装包同步过来的，不归我们管。也不碰 `D:\\yonwork\\`（CLAUDE.md 七）。
 - YonWork 启动时清理 `openclaw.json`，但保留「绝对路径、存在、含 openclaw.plugin.json、
   不在 node_modules/openclaw/extensions 下」的 `plugins.load.paths`，只删一份写死的旧插件名单。
   我们的插件 ID 不在名单里。（1.0.10 主进程 bundle，2026-09-23 查证）
@@ -113,7 +116,9 @@ def uninstall(config: dict, load_path: str) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("action", choices=("status", "install", "uninstall"))
+    parser.add_argument("action", choices=("status", "install", "uninstall", "verify"))
+    parser.add_argument("--batch", type=Path,
+                        help="verify 时顺带核对这一批（results/<批次目录>），要求用统一代理模式跑过")
     args = parser.parse_args(argv)
 
     config_path = _openclaw_json()
@@ -126,6 +131,17 @@ def main(argv: list[str] | None = None) -> int:
                           "files_present": all((target / f).is_file() for f in PLUGIN_FILES),
                           **status(config, load_path)}, ensure_ascii=False, indent=2))
         return 0
+
+    if args.action == "verify":
+        from scripts.trace_bridge_verify import FAIL, gather, render
+
+        current = all((target / name).is_file()
+                      and (target / name).read_bytes() == (SOURCE / name).read_bytes()
+                      for name in PLUGIN_FILES)
+        checks = gather(config_path, target, status(config, load_path),
+                        files_current=current, batch=args.batch)
+        print(render(checks))
+        return 1 if any(check.level == FAIL for check in checks) else 0
 
     if args.action == "install":
         token = _setting("BENCH_COLLECTOR_CLIENT_TOKEN")

@@ -203,7 +203,9 @@ session-id），命中不了就记未归属，**绝不按时间窗猜**；两个
 
 **YonWork hook 扩展（`plugins/benchmark-trace-bridge/`）**
 - 装卸：`.venv/bin/python -m scripts.install_trace_bridge status|install|uninstall`，改完按坑 4 重启。
-  重启后看网关日志 `runtime/openclaw/logs/openclaw.log` 里 `benchmark-trace-bridge loadFailedCount=0`。
+- **YonWork 更新或重启后跑 `install_trace_bridge verify`**（配置、当前网关是否加载、投递回执、
+  版本、安全缓解），再用统一代理跑一批 smoke 后 `verify --batch results/<批次>` 做端到端核对。
+  版本不在 `VERIFIED_VERSIONS` 里会提示；`--batch` 全过之后才改那个常量，那就是重新验收的记录。
 - 关联键是 **`(traceId, spanId)`，不是 callId**：callId 随 attempt 重置，一轮里会重复。
 - 只订阅 `model_call_*`，不申请 `allowConversationAccess`（最小权限）；handler 不许阻塞。
 - 依赖产品 hook 的具体形状，**YonWork 每次升级都要重新验**（1.0.10 就把原生头弄丢过）。
