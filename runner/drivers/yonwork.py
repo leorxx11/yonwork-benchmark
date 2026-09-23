@@ -124,7 +124,7 @@ class YonWorkDriver:
     def collect_usage(self, turn: ChatTurn) -> UsageCollection:
         """端上 HTTP、会话 JSONL、NewAPI 分别采，一路失败不影响另一路。
 
-        端上端点实测在漏记（CLAUDE.md 六-3），默认模型那几轮全靠会话 JSONL
+        端上端点实测在漏记（docs/product-defects.md #3），默认模型那几轮全靠会话 JSONL
         才有数——所以这两路是互为兜底的两端，不是重复。
         """
         samples: list[UsageSample] = []

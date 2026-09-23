@@ -1,7 +1,7 @@
 # 逐请求账本与采集代理
 
 日期：2026-09-22。范围：监控待办第 2 项的代码实现。
-上游依据见 [入口与任务关联验证](model-entry-validation.md)。
+上游依据见 [入口与任务关联验证](history/model-entry-validation.md)。
 
 **YonWork 1.0.10 兼容性：请求仍被采集，但旧轮次头已在实测路径中消失，可能记为未归属。**
 现有 HTTP 账本未存 traceparent 值；hook 映射方案仅完成探针，尚未接入正式归属，见
@@ -10,17 +10,17 @@
 ## 状态
 
 `runner/modelproxy/` 已实现，并已接进 `batch.run_batch` / CLI / Worker，
-46 项离线单测（全套 254 项）。**默认关闭**，关着时跑批行为和以前完全一样。
+有离线单测。**默认关闭**，关着时跑批行为和以前完全一样。
 入库与 Web 报告**已完成**。
 
 四模式对比 v4（48 轮）之后的归属状态：
 
 - **WorkBuddy**：13 请求全归属、覆盖 12 轮、无串轮 ✓
-- **YonWork**：1.0.8 精确关联通过；**1.0.10 起归属率归零**（13 请求 0 归属），
-  见 [1.0.10 探针](yonwork-1.0.10-correlation-probe.md) 和
-  [待办第 5 项](model-call-monitoring-todo.md)
+- **YonWork**：1.0.8 靠原生头精确关联通过；1.0.10 起原生头消失（v4 实测 13 请求 0 归属），
+  **2026-09-23 靠 hook 扩展恢复**（smoke 1/1、tools 8/8），见
+  [1.0.10 探针](yonwork-1.0.10-correlation-probe.md) 和 [待办第 5 项](model-call-monitoring-todo.md)
 
-工具续答、子代理、取消三格未跑。下面写的是这一层自己的行为，
+子代理、取消未跑，工具续答只证明了归属。下面写的是这一层自己的行为，
 不是整轮覆盖的结论。
 
 | 文件 | 职责 |
@@ -52,6 +52,14 @@ run（一轮 benchmark，= BenchmarkId）
 
 加产品时改 `proxy.CORRELATION_HEADERS` 一处，不要在别处另写匹配。
 带前缀的别的 ID（`bench-1-subagent` 对 `bench-1`）**不算命中**，有单测盯着。
+
+**第二条路：hook 绑定（YonWork 1.0.10 起只剩这条）。** 产品里的
+`plugins/benchmark-trace-bridge/` 在每次模型调用时把 `(traceId, spanId) → runId`
+POST 到 `/_control/trace-bindings`，请求自带的 `traceparent` 命中就归属，
+`attribution_source` 记 `traceparent+model_call_started`。
+绑定和请求谁先到都行（后到的绑定会追加一条 closed 行补归属）；只认已注册轮次；
+原生头和绑定说法不一、或同一 span 被报成两轮，记 `conflict`，不挑。
+实现与实机验证见 [1.0.10 探针](yonwork-1.0.10-correlation-probe.md) 末节。
 
 ## 归属策略：和隔离探针刻意不同
 
@@ -232,13 +240,13 @@ build_collector()（常驻服务 或 本进程内，proxy_id = batch_id）
 | `unavailable` | 采集开着，但这一轮一个请求都没经过 |
 
 `unavailable` 那条是这次接线里最关键的一个判断。产品答上来了却一个请求都没经过入口，
-几乎一定是它的 baseUrl 没指向我们，而不是产品真的没调模型。这时记 0 就成了六-3
+几乎一定是它的 baseUrl 没指向我们，而不是产品真的没调模型。这时记 0 就成了产品缺陷 #3
 那种静默漏记：数字看着正常，全是假的。所以标 `unavailable` 并在 note 里写清楚该查什么，
 由断言层决定怎么归类——这一层仍然只搬运不判定。
 
 ⚠️ **产品的 baseUrl 要手动指过来**，驱动不会自动改产品配置。
 端口固定就是为了这一步只做一次；按
-`docs/model-entry-validation.md` 的结论，**不在测量轮次中反复新建账户**。
+`docs/history/model-entry-validation.md` 的结论，**不在测量轮次中反复新建账户**。
 
 ## 实测：两个产品各一轮端到端（2026-09-22）
 
@@ -294,7 +302,7 @@ BenchmarkId  bench-Case02-r1-1a0c7bbf682
 ⚠️ **这条要当心，它影响已有的结论**：`runner/newapi.py` 采 ErrorCalls 用的就是
 `/api/log/self`。被网关在选通道之前直接拒掉的请求**不进这个来源**，
 所以「后台错误日志为 0」**不能**推断「这一轮没有失败的请求」。
-七-3.1 那套逐轮 ErrorCalls 判定在这类失败上是盲的。
+逐轮 ErrorCalls（[error-calls-collection](error-calls-collection.md)）那套判定在这类失败上是盲的。
 （范围限定：实测的是 503 `No available channel`，且只查了 `/api/log/self`
 这一个我们实际在用的来源；别的拒绝类型和管理员视角的日志没试。）
 
@@ -315,7 +323,7 @@ BenchmarkId  bench-Case02-r1-1a0c7bbf682
 代理拿到的 usage 里写着 `prompt_cache_hit_tokens: 9088`、
 `prompt_cache_miss_tokens: 7010`，而 **7,010 恰好等于会话 JSONL 记的那个数**。
 也就是说：会话 JSONL 可能只记**缓存未命中**的那部分，NewAPI 记的是含命中的完整
-prompt_tokens。如果成立，CLAUDE.md 三里那个「同一轮换个来源差 7.6 倍」
+prompt_tokens。如果成立，CLAUDE.md 四-4 里那个「同一轮换个来源差 7.6 倍」
 就有了具体机制，而不只是一句「口径不同」。
 
 ⚠️ **n=1，这是线索不是结论。** 要确认得多跑几轮、覆盖缓存命中率不同的 Case，

@@ -1,7 +1,7 @@
 # NewAPI 本地实例
 
 基准测试的**后台侧**数据源：和端上 `/api/usage/recent-token-history` 按同一 `runId` 对账，
-用来抓「后台与端上不一致、关心跳仍扣费」那类问题（CLAUDE.md 七-4）。
+用来抓「后台与端上不一致、关心跳仍扣费」那类问题（docs/product-defects.md #3）。
 
 ```bash
 cd newapi

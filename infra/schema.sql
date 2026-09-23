@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS runs (
     engine_ms         INT NULL,
     -- 逐请求采集这一轮的状态：disabled（没开）/ observed（采到了）/
     -- unavailable（开着却一个请求都没经过入口）。
-    -- **「没开」和「0 次调用」必须分开**，报 0 就是六-3 那种静默漏记。
+    -- **「没开」和「0 次调用」必须分开**，报 0 就是产品缺陷 #3 那种静默漏记。
     -- ⚠️ 与 runner/ingest.py 的按需 ALTER 是两份，加列时两处都要改。
     model_calls_status VARCHAR(16) NOT NULL DEFAULT 'disabled',
     terminated_by     VARCHAR(64)  NULL,

@@ -4,7 +4,7 @@ from ..models import Check, Layer, LogStats, Verdict
 
 
 def check_logs(stats: LogStats | None) -> list[Check]:
-    """第三层：PAD 时代唯一活下来的那条缺失断言（CLAUDE.md 五-2、七-3）。
+    """第三层：PAD 时代唯一活下来的那条缺失断言（开发日志 五-2、七-3.1，docs/history/dev-log-2026-09.md）。
 
     ErrorCalls / APICalls 以前只采不判，数据再多也没用：
       - ErrorCalls > 0 → Fail（产品的问题）

@@ -25,7 +25,7 @@ case_sets:
       验证「模型真的调了工具」，不是「答案看起来像调过工具」。
       **`min_tool_calls` 是这组用例的重点**：不声明的话，模型一次工具都不调、
       直接凭记忆编一个答案，五层断言照样全绿——探针 S5/S6 就是这么
-      把两个普通短文本场景当成「工具场景没问题」的证据的（CLAUDE.md 七-2.5）。
+      把两个普通短文本场景当成「工具场景没问题」的证据的（开发日志 七-2.5，docs/history/dev-log-2026-09.md）。
       ⚠️ 跑 WorkBuddy 时必须开「允许调用工具」，否则驱动传 `--tools ''`，
       这一组会判 Invalid（跑法不对，不是产品的错）而不是 Fail。
     cases:
@@ -198,7 +198,7 @@ case_sets:
 
       # S5 / S6 是**不受控**场景：输出长度和结构取决于模型当轮行为，
       # 所以只看 Long Task 和 text_updates，不参与归一化比较。
-      # 见 docs/client-probe-protocol.md。探针会记录 tool_calls，
+      # 见 docs/history/client-probe-protocol.md。探针会记录 tool_calls，
       # 如果实际没触发工具，这两个场景就没有测到它们该测的东西——照实报。
       - id: S5
         prompt: >-

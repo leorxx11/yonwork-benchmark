@@ -8,7 +8,7 @@
 所以它得到的是**代理自身在回环上的下限开销**，`网关 + 模型`那部分一概不含。
 真实跑批的开销只会更大，把这个数当成「跑批多花了多少」是错的。
 
-按 CLAUDE.md 七-2.6 的规矩报**中位数 + 最小/最大 + 样本数**，不报均值；
+按 CLAUDE.md 四-3 的规矩报**中位数 + 最小/最大 + 样本数**，不报均值；
 跨度超过关心的效应量就该标样本不足，这里一并算出来。
 """
 from __future__ import annotations
@@ -129,7 +129,7 @@ def selfcheck(rounds: int) -> int:
 
     measured = report["through_collector"]
     if measured["max_ms"] - measured["min_ms"] > measured["median_ms"]:
-        # 七-2.6：跨度超过中位数就别拿这个数说事。
+        # CLAUDE.md 四-3：跨度超过中位数就别拿这个数说事。
         print("样本不足：转发耗时跨度超过中位数，这批数不能用来声称开销水平")
 
     ok = (len(replayed) == rounds

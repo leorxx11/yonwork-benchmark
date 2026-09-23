@@ -150,7 +150,7 @@ class WorkerTests(unittest.TestCase):
 class WorkerExclusivityTests(unittest.TestCase):
     """第二个 Worker 必须被拦住。
 
-    并发跑批会让 NewAPI 后台用量按时间窗张冠李戴（CLAUDE.md 七-5），
+    并发跑批会让 NewAPI 后台用量按时间窗张冠李戴（CLAUDE.md 四-2），
     而且 fail_running_jobs() 会把别人正在跑的任务收拢成 Failed。
     """
 

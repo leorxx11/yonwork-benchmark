@@ -755,7 +755,7 @@ class BatchWiringTests(unittest.TestCase):
         return run_batch(items, driver=driver, options=options, collector=collector)
 
     def test_disabled_collector_is_not_reported_as_zero(self) -> None:
-        """没开采集就得说「没开」。报 0 次调用和六-3 那个端上漏记一模一样。"""
+        """没开采集就得说「没开」。报 0 次调用和产品缺陷 #3 那个端上漏记一模一样。"""
         record, = self._run(_ProxyDriver(self.proxy, routed=False))
         self.assertEqual(record.model_calls.status, "disabled")
         self.assertEqual(record.model_calls.requests, ())

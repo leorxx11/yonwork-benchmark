@@ -26,7 +26,7 @@ from runner.assertions import evaluate
 from runner.models import Expectations
 
 
-# docs/workbuddy-probe-report.md 里那份**实测**输出，只删了 UUID 和时间戳。
+# docs/history/workbuddy-probe-report.md 里那份**实测**输出，只删了 UUID 和时间戳。
 # 数值一个没改——这份夹具的意义就在于它不是我编的。
 PROBE_STDOUT = json.dumps(
     [

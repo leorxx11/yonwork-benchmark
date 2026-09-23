@@ -8,7 +8,7 @@ from ..db import load_env_file, project_root
 
 
 # 固定端口，不用临时端口。产品配置里存的是 URL，端口每次变就得每轮重配产品，
-# 而 `docs/model-entry-validation.md` 已经写明：正式实现应固定入口并检查就绪，
+# 而 `docs/history/model-entry-validation.md` 已经写明：正式实现应固定入口并检查就绪，
 # 不在测量轮次中反复新建账户。
 DEFAULT_PORT = 3312
 

@@ -218,7 +218,7 @@ class LogStats:
 
 
 # 逐请求采集的状态。**「没开采集」和「真的 0 次调用」必须分得开**——
-# 采集器没开着却报 0，和六-3 那个端上漏记长得一模一样：数字看着正常，全是假的。
+# 采集器没开着却报 0，和产品缺陷 #3 那个端上漏记长得一模一样：数字看着正常，全是假的。
 MODEL_CALLS_DISABLED = "disabled"        # 采集代理没启用（默认）
 MODEL_CALLS_OBSERVED = "observed"        # 这一轮确实有请求经过入口
 MODEL_CALLS_UNAVAILABLE = "unavailable"  # 采集开着，但这一轮一个请求都没经过

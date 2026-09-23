@@ -248,7 +248,7 @@ def _modes(products: list[str] | None, models: list[str] | None) -> list[PlanMod
 
     **label 一律由服务端从 product + model_query 推**，不收客户端传来的显示名。
     落库的标签只能反映真正发出去的那个值；报告页显示的模型名来自实际响应
-    （`model_mode`），两者对不上时说明产品静默回落了默认模型（CLAUDE.md 六-4），
+    （`model_mode`），两者对不上时说明产品静默回落了默认模型（docs/product-defects.md #4），
     那正是要看见的信号，不能被一个客户端自述的好看标签盖住。
     """
     rows = _form_list(products)

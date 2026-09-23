@@ -514,7 +514,7 @@ def exclusive_worker_lock() -> Iterator[str]:
     """Worker 和直接 CLI 跑批共用的排他锁，拿不到锁就拒绝执行。
 
     这不是为了将来好扩展才留的余地，恰恰相反：NewAPI 后台用量按时间窗匹配，
-    并发跑批必然张冠李戴（CLAUDE.md 七-5），所以「同时只有一个 Worker」
+    并发跑批必然张冠李戴（CLAUDE.md 四-2），所以「同时只有一个 Worker」
     是这套系统当前的正确性前提，不是运维约定。
 
     锁本身也是 `fail_running_jobs()` 成立的依据——持锁期间再没有别人在跑，

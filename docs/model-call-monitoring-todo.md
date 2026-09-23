@@ -10,7 +10,7 @@
    但「哪次请求对应哪次工具执行」的关联还没有。
 
 WorkBuddy 侧接近可验收（v4 实测 13 请求全归属、覆盖 12 轮、无串轮）。
-前置修复提交：`ecaa372`。证据见 [入口与关联验证](model-entry-validation.md)
+前置修复提交：`ecaa372`。证据见 [入口与关联验证](history/model-entry-validation.md)
 和 [逐请求账本](model-request-ledger.md)。
 
 ## 目标与边界
@@ -32,7 +32,7 @@ WorkBuddy 侧接近可验收（v4 实测 13 请求全归属、覆盖 12 轮、�
 - 已完成测量正确性修复：缺失不填 0、来源独立汇总、耗时口径修正、CLI/Worker 共用锁。
   见 [修复与验收](measurement-correctness.md)。
 - WorkBuddy 经 NewAPI 的单次文本调用已通过真实验证，CLI 与后台 token 一致。
-  见 [接入验收](workbuddy-newapi-validation.md)；不代表工具续答或子代理全量采集已完成。
+  见 [接入验收](history/workbuddy-newapi-validation.md)；不代表工具续答或子代理全量采集已完成。
 - YonWork `runner/newapi.py` 的逐轮采集按请求主模型过滤，需处理一轮内多模型的情况。
 - WorkBuddy 目前提供整轮 CLI 用量，解析会保留最后一条 provider usage/model；
   缺少可靠的逐请求账本，NewAPI 仍靠事后时间窗对账。
@@ -53,7 +53,7 @@ WorkBuddy 侧接近可验收（v4 实测 13 请求全归属、覆盖 12 轮、�
 - [ ] 确定任务收尾规则：产品终止、在途请求、迟到请求和后台子任务分别处理。
   安静一段时间只能作为等待策略，不能单独证明任务不会再发请求。
 
-交付：[入口与关联验证记录](model-entry-validation.md) 已完成；
+交付：[入口与关联验证记录](history/model-entry-validation.md) 已完成；
 采用固定采集入口与产品原生标识，先实现主模型账本，再补覆盖验证。
 
 ### 2. 建立逐请求账本和采集代理
@@ -90,7 +90,7 @@ WorkBuddy 侧接近可验收（v4 实测 13 请求全归属、覆盖 12 轮、�
 
 `model_calls.status` 三态把「没开采集」（`disabled`）、「确实采到」（`observed`）和
 「开着却一个请求都没经过」（`unavailable`）分开。最后一态几乎一定是产品的 baseUrl
-没指过来，记 0 就会变成六-3 那种静默漏记。
+没指过来，记 0 就会变成产品缺陷 #3 那种静默漏记。
 
 - [ ] YonWork 按已验证关联收集该轮全部模型请求，去掉“主模型过滤即可代表整轮”的假设；
   将工具调用 ID、会话与请求关联，关联不上时保留原始证据和原因。

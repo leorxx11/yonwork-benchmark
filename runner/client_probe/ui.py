@@ -65,7 +65,7 @@ async def open_session(session: Session, title: str, *, timeout: float = 6.0) ->
 
     **为什么非点不可**：Host API 没有任何「切换当前会话」的路由，
     renderer 也没有 `/chat/:sessionKey` 路由——会话是 React state 选的
-    （全量查证见 CLAUDE.md 七-1.1）。而界面只渲染**它当前打开的那个会话**，
+    （全量查证见 开发日志 七-1.1，docs/history/dev-log-2026-09.md）。而界面只渲染**它当前打开的那个会话**，
     所以不切过去，API 发的轮次在界面上根本不出现，探针采到的是零事件。
 
     ⚠️ **点「新建任务」没用**，2026-09-21 实测：它只把界面导航到一个

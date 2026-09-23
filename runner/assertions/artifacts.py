@@ -58,7 +58,7 @@ def _tool_calls_check(turn: ChatTurn, expectations: Expectations | None) -> Chec
 
     以前这条恒 PASS——采了不判，跟 ErrorCalls 当初一模一样。
     后果是「工具用例」跑出 0 次工具调用照样全绿：探针 S5/S6 就是这么
-    把两个普通短文本场景当成「工具场景没问题」的证据的（CLAUDE.md 七-2.5）。
+    把两个普通短文本场景当成「工具场景没问题」的证据的（开发日志 七-2.5，docs/history/dev-log-2026-09.md）。
 
     判不过时**要分清是谁的问题**（二-4）：
     - 工具是开着的，模型自己没调 → 产品的问题，Fail。

@@ -133,7 +133,7 @@ class ToolCallTests(unittest.TestCase):
         """这条以前恒 PASS，所以「工具用例」跑出 0 次调用照样全绿。
 
         探针 S5/S6 就是这么把两个普通短文本场景当成
-        「工具场景没问题」的证据的（CLAUDE.md 七-2.5）。
+        「工具场景没问题」的证据的（开发日志 七-2.5，docs/history/dev-log-2026-09.md）。
         """
         evaluation = evaluate(
             turn=make_turn(tool_calls=(), tools_enabled=True),

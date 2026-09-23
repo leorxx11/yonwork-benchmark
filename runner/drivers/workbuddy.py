@@ -14,7 +14,7 @@ from ..models import ChatTurn, JsonObject, UsageSample, now_iso
 from .base import DriverError, UsageCollection
 
 
-# 摸底结论见 docs/workbuddy-probe-report.md。一句话：
+# 摸底结论见 docs/history/workbuddy-probe-report.md。一句话：
 # 桌面那三个 loopback 端口（11983 / 11986 / 18488）**都不是聊天 API**，别再去试；
 # `--serve` 的 REST/ACP 能对话但不返回 token / 实际模型 / 单轮耗时，不能当计量主路线。
 # 主路线是每个 case 起一次内置 headless CLI。

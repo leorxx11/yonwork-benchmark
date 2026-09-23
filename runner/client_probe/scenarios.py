@@ -1,6 +1,6 @@
 """跑 S1–S7 场景集，落 JSONL，按预注册判据出结论。
 
-判据、报告规则、场景分类全部定死在 `docs/client-probe-protocol.md`，
+判据、报告规则、场景分类全部定死在 `docs/history/client-probe-protocol.md`，
 **那份文件在看到任何数据之前就定稿了**。这里只负责执行和套用，不再临时改标准。
 """
 
