@@ -170,8 +170,8 @@ class RowTests(unittest.TestCase):
             rows = {row[0]: row for row in _model_request_rows([payload], "batch-1")}
         self.assertEqual("bench-1", rows["r1"][2])
         self.assertEqual("attributed", rows["r1"][5])
-        # 不属于本批次的轮次不认领
-        self.assertIsNone(rows["r2"][2])
+        # 归属到别的批次的请求不入本批：由它自己那一批入库，这里记成未归属就是污染
+        self.assertNotIn("r2", rows)
 
     def test_suite_id_is_stable(self) -> None:
         self.assertEqual(suite_id_for("a"), suite_id_for("a"))

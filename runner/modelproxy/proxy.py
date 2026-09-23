@@ -79,6 +79,9 @@ class _Registration:
     # 收尾时代理已发出的最大序号。迟到绑定补归属时用它判断**请求本身**是否迟到——
     # 按补归属那一刻轮次开没开来判，会把「请求准时、绑定晚到」错记成 late。
     closed_after_sequence: int | None = None
+    # 注册时的账本，即这一轮所属批次的文件。常驻服务按批次切账本，
+    # 这一轮的请求（包括收尾后才到的）都要写回这里，而不是写进「当时的当前文件」。
+    ledger: LedgerWriter | None = None
 
 
 @dataclass(slots=True)
@@ -146,6 +149,10 @@ class CollectorProxy:
         self._runs: dict[str, _Registration] = {}
         self._records: dict[str, ModelRequestRecord] = {}
         self._trace_bindings: dict[tuple[str, str], _TraceBinding] = {}
+        # 每条记录写过的账本。之后的每次更新都写回这些文件，再加上所属轮次的账本——
+        # 否则跨批次的迟到绑定 / 迟到收尾会落进下一批的文件，而原批次的文件停在旧状态。
+        self._record_ledgers: dict[str, dict[Path, LedgerWriter]] = {}
+        self._writers: dict[Path, LedgerWriter] = {ledger.path: ledger}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._bind = bind
@@ -226,8 +233,9 @@ class CollectorProxy:
         （MySQL 咨询锁保证），所以直接换 writer 就够，不需要并发安全的多写。
         """
         with self._lock:
-            if Path(path) != self._ledger.path:
-                self._ledger = LedgerWriter(Path(path))
+            path = Path(path)
+            if path != self._ledger.path:
+                self._ledger = self._writers.setdefault(path, LedgerWriter(path))
 
     # ---- 轮次注册 -------------------------------------------------------
 
@@ -238,7 +246,7 @@ class CollectorProxy:
         with self._lock:
             if run_id in self._runs:
                 raise ProxyError(f"轮次已注册：{run_id}")
-            self._runs[run_id] = _Registration(run_id=run_id, product=product)
+            self._runs[run_id] = _Registration(run_id=run_id, product=product, ledger=self._ledger)
 
     def close_run(self, run_id: str) -> None:
         """产品已终止本轮。之后再来的同标识请求记 `late`，**仍归这一轮**。
@@ -283,7 +291,7 @@ class CollectorProxy:
                         rewrite.append(record)
             status = "bound" if binding.run_id else "conflict"
         for record in rewrite:
-            self._ledger.write(record)
+            self._write(record)
         return status
 
     def _resolve_hook_run(self, run_id: str) -> str | None:
@@ -393,7 +401,7 @@ class CollectorProxy:
             record.termination = REFUSED
             record.http_status = 404
             record.error_detail = "未知路径"
-        self._ledger.write(record)
+        self._write(record)
         return record
 
     def finish(self, record: ModelRequestRecord, started: float | None = None) -> None:
@@ -402,7 +410,25 @@ class CollectorProxy:
         record.ended_at = now_iso()
         record.usage_status = OBSERVED if record.usage else MISSING
         record.record_status = "closed"
-        self._ledger.write(record)
+        self._write(record)
+
+    def _write(self, record: ModelRequestRecord) -> None:
+        """写进这条记录见过的每个账本，再加上它当前所属轮次的账本。
+
+        首次写入落在所属轮次的账本；未归属的落在当前账本。一个文件一旦记过它，
+        之后的更新（收尾、补归属、改判冲突）都要跟过去，否则那份文件永远停在旧状态。
+        """
+        with self._lock:
+            targets = self._record_ledgers.setdefault(record.request_id, {})
+            registration = self._runs.get(record.run_id or "")
+            owner = registration.ledger if registration is not None else None
+            if owner is not None:
+                targets.setdefault(owner.path, owner)
+            if not targets:
+                targets[self._ledger.path] = self._ledger
+            writers = list(targets.values())
+        for writer in writers:
+            writer.write(record)
 
     def authorized(self, header_value: str) -> bool:
         return secrets.compare_digest(header_value, f"Bearer {self._client_token}")

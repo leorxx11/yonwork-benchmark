@@ -643,6 +643,65 @@ class ControlApiTests(unittest.TestCase):
         status, _ = self._control("POST", "/trace-bindings", {"bindings": "nope"})
         self.assertEqual(status, 400)
 
+    # ---- 跨批次：常驻服务按批次切账本，写入必须落在请求所属批次的文件 ----
+
+    TRACE = "00-1630b2f560198ebd2370d03e0e688cf4-eeca49719ddacce2-01"
+
+    def _ledger(self, batch: str) -> list[ModelRequestRecord]:
+        path = self.root / batch / "model-requests.jsonl"
+        return load_ledger(path) if path.is_file() else []
+
+    def _begin(self, **headers: str) -> ModelRequestRecord:
+        return self.proxy.begin(path="/v1/chat/completions", body=b"{}", headers={
+            "Authorization": f"Bearer {self.proxy.client_token}", **headers})
+
+    def test_late_binding_after_next_batch_stays_in_its_own_ledger(self) -> None:
+        self._control("POST", "/runs", {"run_id": "a1", "product": "yonwork", "batch_id": "A"})
+        record = self._begin(traceparent=self.TRACE)
+        self.proxy.finish(record)
+        self._control("POST", "/runs/a1/close")
+        self._control("POST", "/runs", {"run_id": "b1", "product": "yonwork", "batch_id": "B"})
+        self.proxy.bind_trace(trace_id=self.TRACE.split("-")[1], span_id=self.TRACE.split("-")[2],
+                              run_id="a1", source="model_call_started")
+        a_record, = self._ledger("A")
+        self.assertEqual((a_record.run_id, a_record.attribution), ("a1", ATTRIBUTED))
+        self.assertEqual(self._ledger("B"), [])
+
+    def test_request_finishing_after_next_batch_stays_in_its_own_ledger(self) -> None:
+        """流式请求比它那一轮活得久（轮次超时后产品还在收）。"""
+        self._control("POST", "/runs", {"run_id": "a1", "product": "yonwork", "batch_id": "A"})
+        record = self._begin(**{"x-yonwork-run-id": "a1"})
+        self._control("POST", "/runs/a1/close")
+        self._control("POST", "/runs", {"run_id": "b1", "product": "yonwork", "batch_id": "B"})
+        self.proxy.finish(record)
+        self.assertEqual([r.record_status for r in self._ledger("A")], ["closed"])
+        self.assertEqual(self._ledger("B"), [])
+
+    def test_late_request_of_a_closed_run_goes_to_that_runs_ledger(self) -> None:
+        self._control("POST", "/runs", {"run_id": "a1", "product": "yonwork", "batch_id": "A"})
+        self._control("POST", "/runs/a1/close")
+        self._control("POST", "/runs", {"run_id": "b1", "product": "yonwork", "batch_id": "B"})
+        record = self._begin(**{"x-yonwork-run-id": "a1"})
+        self.proxy.finish(record)
+        late, = self._ledger("A")
+        self.assertEqual(late.attribution, LATE)
+        self.assertEqual(self._ledger("B"), [])
+
+    def test_request_logged_in_next_batch_then_bound_to_previous_run(self) -> None:
+        """请求落在 B 期间（当时未归属），绑定说它属于 A 的某一轮：
+        A 的账本要拿到它，B 的账本也要更新成「不是我的」，而不是永远停在未归属。"""
+        self._control("POST", "/runs", {"run_id": "a1", "product": "yonwork", "batch_id": "A"})
+        self._control("POST", "/runs/a1/close")
+        self._control("POST", "/runs", {"run_id": "b1", "product": "yonwork", "batch_id": "B"})
+        record = self._begin(traceparent=self.TRACE)
+        self.proxy.finish(record)
+        self.proxy.bind_trace(trace_id=self.TRACE.split("-")[1], span_id=self.TRACE.split("-")[2],
+                              run_id="a1", source="model_call_started")
+        a_record, = self._ledger("A")
+        b_record, = self._ledger("B")
+        self.assertEqual(a_record.run_id, "a1")
+        self.assertEqual(b_record.run_id, "a1")
+
     def test_control_traffic_never_enters_the_ledger(self) -> None:
         self._control("POST", "/runs", {"run_id": "r1", "product": "yonwork", "batch_id": "b7"})
         self._control("GET", "/runs/r1")

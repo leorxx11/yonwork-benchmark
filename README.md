@@ -100,6 +100,28 @@ docker compose down                  # 保留 infra/data 与 newapi/data
 docker compose up -d --build
 ```
 
+## YonWork 更新或重启之后
+
+hook 扩展依赖 YonWork 内部细节，每次更新或重启都按这三步走一遍（约 5 分钟）：
+
+```bash
+# 1. 自检：配置、当前网关是否加载了插件、投递回执、版本、安全缓解
+.venv/bin/python -m scripts.install_trace_bridge verify
+
+# 2. 用经过采集入口的模式跑一轮（先停 Worker，CLI 与它抢同一把锁）
+.venv/bin/python -m runner --case-set smoke --model 统一代理 --batch-id bridge-verify-$(date +%Y%m%d-%H%M%S)
+
+# 3. 端到端核对这一批：每轮采到、全部归属、runId == BenchmarkId、span 一一对应
+.venv/bin/python -m scripts.install_trace_bridge verify --batch results/<第 2 步的批次>
+```
+
+- 第 1 步只剩「当前网关还没见过模型调用」一条 `!` 是正常的，跑完第 2 步就消失。
+- ✗ 在「安全缓解」：YonWork 是从 WSL 或别的路径拉起的，用 uTools 重新启动（CLAUDE.md 坑 4）。
+- ✗ 在「配置」：更新清掉了登记，重新 `install` 再重启。
+- ✗ 在「批次核对」而前面全过：YonWork 改了 hook 的形状或语义，要重新查源码（CLAUDE.md 坑 6）。
+- 版本提示「未验收」：第 3 步全过后，把新版本号写进 `scripts/trace_bridge_verify.py` 的
+  `VERIFIED_VERSIONS` 并提交，那就是这个版本的验收记录。
+
 ## 用例
 
 `cases/catalog.yaml` 是唯一主用例源，适合 Git diff、代码审查和合并冲突处理。它描述命名用例集、

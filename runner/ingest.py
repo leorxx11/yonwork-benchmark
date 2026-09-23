@@ -193,6 +193,7 @@ INSERT INTO model_requests (request_id, batch_id, benchmark_id, proxy_id, sequen
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
     %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON DUPLICATE KEY UPDATE
+    batch_id=VALUES(batch_id),
     benchmark_id=VALUES(benchmark_id), attribution=VALUES(attribution),
     attribution_source=VALUES(attribution_source), response_model=VALUES(response_model),
     http_status=VALUES(http_status), termination=VALUES(termination),
@@ -257,7 +258,8 @@ def _model_request_rows(records: list[JsonObject], batch_id: str) -> list[tuple[
 
     账本读得到时**以账本为准**：hook 绑定可能晚于这一轮的快照才到
     （`CollectorProxy.bind_trace` 会追加一条新的 closed 行），快照里还是未归属，
-    账本里已经补上了。归属只认本批次里确有的 BenchmarkId。
+    账本里已经补上了。归属到别的批次的记录不入本批——跨批次的迟到请求
+    会同时写进两批的账本，由它所属那一批入库（重复入库时 `batch_id` 跟着改过去）。
 
     账本读不到就只入来源 1（换台机器重放时会这样），**不伪造**缺失的那部分。
     """
@@ -284,9 +286,12 @@ def _model_request_rows(records: list[JsonObject], batch_id: str) -> list[tuple[
         except LedgerError:
             continue
         for entry in entries:
-            owner = entry.run_id if entry.run_id in batch_runs else None
-            if entry.request_id not in rows or owner is not None or entry.run_id is None:
-                rows[entry.request_id] = _model_request_row(entry.to_json(), batch_id, owner)
+            if entry.run_id and entry.run_id not in batch_runs:
+                # 归属到别的批次（跨批次的迟到请求 / 迟到绑定）：由那一批入库，
+                # 这里记成「本批未归属」就是污染。
+                rows.pop(entry.request_id, None)
+                continue
+            rows[entry.request_id] = _model_request_row(entry.to_json(), batch_id, entry.run_id)
     return list(rows.values())
 
 
